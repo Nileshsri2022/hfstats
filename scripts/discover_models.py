@@ -1,7 +1,10 @@
 """HF API discovery with provider-level extraction."""
 import json
 import os
-import sys
+import time
+import re
+import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -13,44 +16,54 @@ OUT_PATH = os.environ.get("CANDIDATES_PATH", "scripts/candidates.json")
 
 def fetch_models():
     all_models = []
-    offset = 0
-    batch = 100
+    next_url = f"{API_URL}?pipeline_tag=text-generation&sort=downloads&direction=-1&limit=100&expand=inferenceProviderMapping"
+    batch_count = 0
 
-    while len(all_models) < LIMIT:
-        url = (
-            f"{API_URL}?pipeline_tag=text-generation"
-            f"&sort=downloads&direction=-1&limit={batch}&offset={offset}"
-            f"&expand[]=inferenceProviderMapping"
-        )
-        req = urllib.request.Request(
-            url,
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+    while len(all_models) < LIMIT and next_url:
+        req = urllib.request.Request(next_url, headers={"Accept": "application/json"})
+        data = None
+        next_url = None
 
-        if not isinstance(data, list) or not data:
+        for attempt in range(5):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    raw = resp.read().decode("utf-8")
+                    link = resp.headers.get("Link", "")
+                    data = json.loads(raw)
+
+                    m = re.search(r'<([^>]+)>[^<]*rel="next"', link)
+                    if m:
+                        next_url = m.group(1)
+                    else:
+                        next_url = None
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    wait = int(e.headers.get("Retry-After", 30))
+                    print(f"Rate limited, retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    raise
+
+        if not data or not isinstance(data, list):
             break
 
+        batch_count += 1
+
         for m in data:
-            if m.get("gated", False):
+            if m.get("gated") is True:
                 continue
-            if m.get("private", True):
+            if m.get("private") is True:
                 continue
             downloads = m.get("downloads", 0) or 0
             if downloads < MIN_DOWNLOADS:
                 continue
-            # Only keep models that have at least one live provider mapping
             mapping = m.get("inferenceProviderMapping", [])
-            if not mapping:
-                continue
-            if not any(isinstance(x, dict) and x.get("status") == "live" for x in mapping):
-                continue
-            all_models.append(m)
+            if mapping and any(isinstance(x, dict) and x.get("status") == "live" for x in mapping):
+                all_models.append(m)
 
-        print(f"Fetched batch offset={offset}, total candidates so far: {len(all_models)}")
-        offset += batch
-        if len(data) < batch:
+        print(f"batch={batch_count}, candidates={len(all_models)}, has_next={next_url is not None}")
+        if len(all_models) >= LIMIT:
             break
 
     return all_models[:LIMIT]
@@ -64,19 +77,16 @@ def extract_pairs(models):
         likes = m.get("likes", 0) or 0
         mapping = m.get("inferenceProviderMapping", [])
         for info in mapping:
-            if not isinstance(info, dict):
-                continue
-            if info.get("status") != "live":
+            if not isinstance(info, dict) or info.get("status") != "live":
                 continue
             provider = info.get("provider")
-            provider_id = info.get("providerId", model_id)
             if not provider:
                 continue
             pairs.append(
                 {
                     "model": model_id,
                     "provider": provider,
-                    "provider_id": provider_id,
+                    "provider_id": info.get("providerId", model_id),
                     "downloads": downloads,
                     "likes": likes,
                 }
@@ -89,20 +99,17 @@ def main():
     models = fetch_models()
     pairs = extract_pairs(models)
 
-    outfile = OUT_PATH
-    os.makedirs(os.path.dirname(outfile), exist_ok=True)
-
+    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "total_models": len(models),
         "total_pairs": len(pairs),
         "pairs": pairs,
     }
-
-    with open(outfile, "w", encoding="utf-8") as f:
+    with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-    print(f"Wrote {len(models)} models, {len(pairs)} pairs to {outfile}")
+    print(f"Wrote {len(models)} models, {len(pairs)} pairs to {OUT_PATH}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-11T12:00:00Z", "pairs": [{"model": "Qwen/Qwen2.5-7B-Instruct", "provider": "together", "downloads": 100000, "likes": 1000, "status": "not_found"}, {"model": "meta-llama/Llama-3.1-8B-Instruct", "provider": "novita", "downloads": 500000, "likes": 5000, "status": "working"}], "counts": {"not_found": 1, "working": 1}}

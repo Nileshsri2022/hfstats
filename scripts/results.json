@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-05-11T12:00:00Z",
+  "group": "group1",
+  "prompt": "Write a short paragraph explaining the concept of neural networks in machine learning. Be concise but informative.",
+  "results": [
+    {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "provider": "together",
+      "success": false,
+      "error": "HTTP 404: <!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Error</title>\n</head>\n<body>\n<pre>Cannot POST /models/Qwen/Qwen2.5-7B-Instruct:together</pre>\n</body>\n</html>\n",
+      "error_category": "not_found",
+      "response_time": 550,
+      "ttft": null,
+      "tokens_generated": 0,
+      "total_tokens": null,
+      "response": ""
+    }
+  ]
+}

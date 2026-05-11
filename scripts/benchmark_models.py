@@ -21,7 +21,7 @@ REQUEST_TIMEOUT = 120
 
 
 def benchmark_pair(model: str, provider: str) -> dict:
-    url = f"{INFERENCE_URL}{model}:{provider}"
+    url = f"{INFERENCE_URL}{model}"
     payload = json.dumps(
         {
             "model": f"{model}:{provider}",

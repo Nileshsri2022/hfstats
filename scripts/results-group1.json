@@ -1,0 +1,1 @@
+{"timestamp": "2026-05-11T12:00:00Z", "group": "group1", "prompt": "test prompt", "results": [{"model": "meta-llama/Llama-3.1-8B-Instruct", "provider": "novita", "success": true, "response_time": 1500, "ttft": 200, "tokens_generated": 50, "total_tokens": 55, "throughput": 33.3, "error": null, "error_category": "working", "response": "test response"}]}

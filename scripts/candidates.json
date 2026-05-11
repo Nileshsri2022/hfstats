@@ -1,6 +1,70 @@
 {
-  "timestamp": "2026-05-11T07:02:29.607923+00:00",
-  "total_models": 0,
-  "total_pairs": 0,
-  "pairs": []
+  "timestamp": "2026-05-11T07:45:52.352730+00:00",
+  "total_models": 5,
+  "total_pairs": 9,
+  "pairs": [
+    {
+      "model": "Qwen/Qwen3-0.6B",
+      "provider": "featherless-ai",
+      "provider_id": "Qwen/Qwen3-0.6B",
+      "downloads": 18238415,
+      "likes": 0
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "provider": "together",
+      "provider_id": "Qwen/Qwen2.5-7B-Instruct-Turbo",
+      "downloads": 13227755,
+      "likes": 0
+    },
+    {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "provider": "featherless-ai",
+      "provider_id": "Qwen/Qwen2.5-7B-Instruct",
+      "downloads": 13227755,
+      "likes": 0
+    },
+    {
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "provider": "featherless-ai",
+      "provider_id": "Qwen/Qwen2.5-1.5B-Instruct",
+      "downloads": 12189925,
+      "likes": 0
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "provider": "fireworks-ai",
+      "provider_id": "accounts/fireworks/models/qwen3-8b",
+      "downloads": 11478261,
+      "likes": 0
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "provider": "featherless-ai",
+      "provider_id": "Qwen/Qwen3-8B",
+      "downloads": 11478261,
+      "likes": 0
+    },
+    {
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "provider": "novita",
+      "provider_id": "deepseek/deepseek-v3.2",
+      "downloads": 11120947,
+      "likes": 0
+    },
+    {
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "provider": "fireworks-ai",
+      "provider_id": "accounts/fireworks/models/deepseek-v3p2",
+      "downloads": 11120947,
+      "likes": 0
+    },
+    {
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "provider": "featherless-ai",
+      "provider_id": "deepseek-ai/DeepSeek-V3.2",
+      "downloads": 11120947,
+      "likes": 0
+    }
+  ]
 }
