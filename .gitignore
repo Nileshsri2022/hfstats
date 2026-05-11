@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.ipynb_checkpoints/
+*.log
+.DS_Store
+Thumbs.db
+.history/
+
+# Generated artifacts (keep in repo for GH Pages, but ignore during dev if desired)
+# history.db
+# scripts/*.json

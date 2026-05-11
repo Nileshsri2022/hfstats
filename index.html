@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HFStats v3 — Provider-Level Benchmark Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.min.js"></script>
+<style>
+:root {
+  --bg: #0B0F19;
+  --bg-card: #111827;
+  --bg-hover: #1a2233;
+  --accent: #FFD21E;
+  --accent-dim: rgba(255,210,30,0.10);
+  --blue: #6C9AFF;
+  --teal: #10B981;
+  --text: #F3F4F6;
+  --text-dim: #9CA3AF;
+  --success: #22C55E;
+  --danger: #EF4444;
+  --warning: #F59E0B;
+  --border: rgba(255,255,255,0.06);
+  --radius: 12px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-x: hidden;
+}
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; }
+a { color: var(--blue); text-decoration: none; }
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+}
+
+/* Loading */
+#loading {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--bg);
+  z-index: 9999;
+  transition: opacity .3s;
+}
+#loading .spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--accent-dim);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Layout */
+.app { max-width: 1280px; margin: 0 auto; padding: 24px; }
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 24px; flex-wrap: wrap; gap: 12px;
+}
+header h1 { font-size: 22px; display: flex; align-items: center; gap: 10px; }
+header .badge {
+  background: var(--accent); color: #0B0F19;
+  font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+header .meta { color: var(--text-dim); font-size: 12px; }
+
+/* Tabs */
+.tabs {
+  display: flex; gap: 4px; overflow-x: auto;
+  border-bottom: 1px solid var(--border); margin-bottom: 20px; padding-bottom: 0;
+}
+.tab {
+  padding: 10px 16px; font-size: 13px; font-weight: 500;
+  color: var(--text-dim); border-bottom: 2px solid transparent;
+  white-space: nowrap; transition: .15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Cards & Grids */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 960px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+}
+
+/* KPI */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.kpi {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+}
+.kpi .label { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.kpi .value { font-size: 24px; font-weight: 700; }
+.kpi .delta { font-size: 11px; margin-top: 4px; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--text-dim); font-weight: 500; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 8px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: rgba(255,255,255,0.02); }
+.sortable { cursor: pointer; user-select: none; }
+.sortable::after { content: " ⇅"; color: var(--text-dim); font-size: 11px; }
+
+/* Chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--accent-dim); color: var(--accent);
+  font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px;
+}
+.provider-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px;
+  color: #fff;
+}
+.status-pill {
+  display: inline-block; font-size: 11px; font-weight: 500;
+  padding: 2px 8px; border-radius: 999px;
+}
+.status-working { background: rgba(34,197,94,0.12); color: var(--success); }
+.status-loading { background: rgba(245,158,11,0.12); color: var(--warning); }
+.status-overloaded { background: rgba(239,68,68,0.12); color: var(--danger); }
+.status-rate_limited { background: rgba(107,114,128,0.12); color: #9CA3AF; }
+.status-cold_start { background: rgba(108,154,255,0.12); color: var(--blue); }
+.status-provider_bug { background: rgba(239,68,68,0.12); color: var(--danger); }
+.status-quota_exceeded { background: rgba(239,68,68,0.12); color: var(--danger); }
+.status-not_found { background: rgba(107,114,128,0.12); color: #9CA3AF; }
+.status-unsupported { background: rgba(107,114,128,0.12); color: #9CA3AF; }
+
+/* Sparkline canvas */
+.sparkline { vertical-align: middle; }
+
+/* Inputs */
+select, input {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; font-size: 13px; outline: none;
+}
+select:focus, input:focus { border-color: var(--accent); }
+
+/* Charts */
+.chart-wrap { position: relative; height: 240px; }
+
+/* Mono */
+.mono { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+
+/* Animations */
+.fade-in { animation: fadeIn .3s ease both; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <p style="margin-top:16px;color:var(--text-dim)">Loading benchmark database...</p>
+</div>
+
+<div class="app" id="app" style="display:none">
+  <header>
+    <div>
+      <h1><span style="font-size:26px">🤗</span> HFStats <span class="badge">v3</span></h1>
+      <div class="meta" id="meta">Provider-level benchmark dashboard</div>
+    </div>
+    <div class="meta" id="lastRun">—</div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="leaderboard">Leaderboard</button>
+    <button class="tab" data-tab="explorer">Explorer</button>
+    <button class="tab" data-tab="timeline">Timeline</button>
+    <button class="tab" data-tab="compare">Compare</button>
+    <button class="tab" data-tab="providers">Providers</button>
+    <button class="tab" data-tab="discovery">Discovery</button>
+  </nav>
+
+  <main id="content"></main>
+</div>
+
+<script>
+/* ============================================================
+   Provider meta
+   ============================================================ */
+const PROVIDER_META = {
+  'groq':           { name: 'Groq',        color: '#F55036' },
+  'together':       { name: 'Together',    color: '#6366F1' },
+  'sambanova':      { name: 'SambaNova',   color: '#00D4AA' },
+  'fireworks-ai':   { name: 'Fireworks',   color: '#FF6B35' },
+  'hyperbolic':     { name: 'Hyperbolic',  color: '#A855F7' },
+  'featherless-ai': { name: 'Featherless', color: '#38BDF8' },
+  'cerebras':       { name: 'Cerebras',    color: '#EC4899' },
+  'novita':         { name: 'Novita',      color: '#84CC16' },
+  'hf-inference':   { name: 'HF Native',   color: '#FFD21E' },
+  'replicate':      { name: 'Replicate',   color: '#2563EB' },
+  'fal-ai':         { name: 'Fal',         color: '#7C3AED' },
+};
+function providerChip(provider) {
+  const m = PROVIDER_META[provider] || { name: provider, color: '#9CA3AF' };
+  return `<span class="provider-chip" style="background:${m.color}22;color:${m.color}">${m.name}</span>`;
+}
+function statusPill(status) {
+  const cls = 'status-' + (status || 'unknown');
+  return `<span class="status-pill ${cls}">${status || 'unknown'}</span>`;
+}
+function fmtMs(v) { return v == null ? '—' : v + ' ms'; }
+function fmtNum(v) { return v == null ? '—' : v.toLocaleString(); }
+function fmtPct(v) { return v == null ? '—' : v.toFixed(1) + '%'; }
+function fmtTp(v) { return v == null ? '—' : v.toFixed(1) + ' tok/s'; }
+
+/* ============================================================
+   DB
+   ============================================================ */
+let db = null;
+let runs = [];
+let results = [];
+let snapshots = [];
+let pairs = new Set();
+
+async function loadDb() {
+  const SQL = await initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${f}` });
+  const buf = await fetch('history.db').then(r => {
+    if (!r.ok) throw new Error('history.db not found');
+    return r.arrayBuffer();
+  });
+  db = new SQL.Database(new Uint8Array(buf));
+
+  runs = queryAll('SELECT * FROM runs ORDER BY id');
+  results = queryAll('SELECT * FROM model_results ORDER BY run_id');
+  snapshots = queryAll('SELECT * FROM discovery_snapshots ORDER BY run_id');
+
+  // Build pair set
+  results.forEach(r => pairs.add(r.model + ':' + r.provider));
+  snapshots.forEach(s => pairs.add(s.model + ':' + s.provider));
+
+  document.getElementById('loading').style.opacity = '0';
+  setTimeout(() => document.getElementById('loading').style.display = 'none', 300);
+  document.getElementById('app').style.display = 'block';
+
+  const last = runs[runs.length - 1];
+  if (last) {
+    const d = new Date(last.timestamp);
+    document.getElementById('lastRun').textContent =
+      'Last run: ' + d.toLocaleString() + ' · ' + runs.length + ' runs';
+  }
+  renderTab('overview');
+}
+
+function queryAll(sql) {
+  const stmt = db.prepare(sql);
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+function query(sql, params) {
+  const stmt = db.prepare(sql);
+  if (params) stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+/* ============================================================
+   Helpers
+   ============================================================ */
+function pairStats() {
+  const map = {};
+  results.forEach(r => {
+    const key = r.model + ':' + r.provider;
+    if (!map[key]) map[key] = { key, model: r.model, provider: r.provider, runs: [], successes: 0 };
+    map[key].runs.push(r);
+    if (r.success) map[key].successes++;
+  });
+  return Object.values(map).map(s => {
+    const times = s.runs.filter(r => r.success).map(r => r.response_time);
+    const ttfts = s.runs.filter(r => r.success && r.ttft != null).map(r => r.ttft);
+    const tps = s.runs.filter(r => r.success && r.throughput != null).map(r => r.throughput);
+    return {
+      ...s,
+      uptime: s.runs.length ? (s.successes / s.runs.length) * 100 : 0,
+      avgTime: times.length ? times.reduce((a,b)=>a+b,0)/times.length : null,
+      avgTtft: ttfts.length ? ttfts.reduce((a,b)=>a+b,0)/ttfts.length : null,
+      avgTp: tps.length ? tps.reduce((a,b)=>a+b,0)/tps.length : null,
+      last: s.runs[s.runs.length-1],
+    };
+  });
+}
+
+function providerStats() {
+  const map = {};
+  results.forEach(r => {
+    const p = r.provider;
+    if (!map[p]) map[p] = { provider: p, runs: [], successes: 0, ttfts: [], times: [], models: new Set() };
+    map[p].runs.push(r);
+    map[p].models.add(r.model);
+    if (r.success) {
+      map[p].successes++;
+      if (r.ttft != null) map[p].ttfts.push(r.ttft);
+      if (r.response_time != null) map[p].times.push(r.response_time);
+    }
+  });
+  // Add snapshot models
+  snapshots.forEach(s => {
+    if (map[s.provider]) map[s.provider].models.add(s.model);
+  });
+  return Object.values(map).map(s => ({
+    provider: s.provider,
+    models: s.models.size,
+    uptime: s.runs.length ? (s.successes / s.runs.length) * 100 : 0,
+    avgTtft: s.ttfts.length ? s.ttfts.reduce((a,b)=>a+b,0)/s.ttfts.length : null,
+    avgLatency: s.times.length ? s.times.reduce((a,b)=>a+b,0)/s.times.length : null,
+    success24: s.runs.length ? (s.successes / s.runs.length) * 100 : 0, // simplified; all data treated as window
+  }));
+}
+
+function sparklineCanvas(values, color) {
+  if (!values.length) return '—';
+  const w = 80, h = 24;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max - min || 1;
+  let pts = '';
+  values.forEach((v, i) => {
+    const x = (i / (values.length - 1 || 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    pts += (i ? 'L' : 'M') + x + ',' + y;
+  });
+  return `<svg width="${w}" height="${h}" class="sparkline"><path d="${pts}" stroke="${color}" fill="none" stroke-width="1.5"/></svg>`;
+}
+
+/* ============================================================
+   Tabs
+   ============================================================ */
+let currentTab = 'overview';
+document.getElementById('tabs').addEventListener('click', e => {
+  const t = e.target.closest('.tab');
+  if (!t) return;
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  t.classList.add('active');
+  renderTab(t.dataset.tab);
+});
+
+function renderTab(name) {
+  currentTab = name;
+  const el = document.getElementById('content');
+  el.innerHTML = '';
+  if (name === 'overview') renderOverview(el);
+  else if (name === 'leaderboard') renderLeaderboard(el);
+  else if (name === 'explorer') renderExplorer(el);
+  else if (name === 'timeline') renderTimeline(el);
+  else if (name === 'compare') renderCompare(el);
+  else if (name === 'providers') renderProviders(el);
+  else if (name === 'discovery') renderDiscovery(el);
+}
+
+/* ============================================================
+   Overview
+   ============================================================ */
+function renderOverview(el) {
+  if (!runs.length) { el.innerHTML = '<div class="card">No runs yet.</div>'; return; }
+  const last = runs[runs.length - 1];
+  const lastResults = results.filter(r => r.run_id === last.id);
+  const success = lastResults.filter(r => r.success);
+  const best = success.reduce((a,b) => (!a || b.response_time < a.response_time) ? b : a, null);
+  const bestTtft = success.reduce((a,b) => (!a || (b.ttft!=null && b.ttft < a.ttft)) ? b : a, null);
+  const bestTp = success.reduce((a,b) => (!a || (b.throughput!=null && b.throughput > a.throughput)) ? b : a, null);
+  const bestRel = pairStats().sort((a,b) => b.uptime - a.uptime)[0];
+
+  const kpi = (label, value, extra='') =>
+    `<div class="kpi"><div class="label">${label}</div><div class="value" style="color:var(--accent)">${value}</div>${extra ? `<div class="delta">${extra}</div>` : ''}</div>`;
+
+  let html = `<div class="kpi-grid fade-in">
+    ${kpi('Discovered', fmtNum(last.candidates_found))}
+    ${kpi('Working', fmtNum(last.pairs_working))}
+    ${kpi('Success Rate', fmtPct(last.total_pairs ? (last.success_count/last.total_pairs)*100 : 0))}
+    ${kpi('Best TTFT', bestTtft ? fmtMs(bestTtft.ttft) : '—', bestTtft ? `${bestTtft.model}:${bestTtft.provider}` : '')}
+    ${kpi('Best Throughput', bestTp ? fmtTp(bestTp.throughput) : '—', bestTp ? `${bestTp.model}:${bestTp.provider}` : '')}
+    ${kpi('Most Reliable', bestRel ? fmtPct(bestRel.uptime) : '—', bestRel ? `${bestRel.model}:${bestRel.provider}` : '')}
+  </div>`;
+
+  // Success trend
+  html += `<div class="card fade-in" style="animation-delay:.05s"><h3 style="margin-bottom:10px">Success Rate Trend</h3><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>`;
+
+  // Top tables
+  html += `<div class="grid grid-2 fade-in" style="animation-delay:.1s">
+    <div class="card"><h3 style="margin-bottom:10px">Top 10 Fastest Pairs (Last Run)</h3>
+      <table><thead><tr><th>Pair</th><th>Time</th><th>TTFT</th><th>Tok/s</th></tr></thead><tbody>`;
+  const topFast = [...success].sort((a,b) => a.response_time - b.response_time).slice(0,10);
+  topFast.forEach(r => {
+    html += `<tr><td><span class="mono">${r.model}</span> ${providerChip(r.provider)}</td><td>${fmtMs(r.response_time)}</td><td>${fmtMs(r.ttft)}</td><td>${fmtTp(r.throughput)}</td></tr>`;
+  });
+  html += `</tbody></table></div>`;
+
+  html += `<div class="card"><h3 style="margin-bottom:10px">Top 10 Lowest TTFT (Last Run)</h3>
+    <table><thead><tr><th>Pair</th><th>TTFT</th><th>Time</th><th>Tok/s</th></tr></thead><tbody>`;
+  const topTtft = [...success].filter(r=>r.ttft!=null).sort((a,b)=>a.ttft-b.ttft).slice(0,10);
+  topTtft.forEach(r => {
+    html += `<tr><td><span class="mono">${r.model}</span> ${providerChip(r.provider)}</td><td>${fmtMs(r.ttft)}</td><td>${fmtMs(r.response_time)}</td><td>${fmtTp(r.throughput)}</td></tr>`;
+  });
+  html += `</tbody></table></div></div>`;
+
+  // Reliability pills
+  html += `<div class="card fade-in" style="animation-delay:.15s"><h3 style="margin-bottom:10px">Reliability (All Runs)</h3><div style="display:flex;flex-wrap:wrap;gap:8px">`;
+  const stats = pairStats().sort((a,b) => b.uptime - a.uptime).slice(0, 20);
+  stats.forEach(s => {
+    const c = s.uptime >= 95 ? 'var(--success)' : s.uptime >= 70 ? 'var(--warning)' : 'var(--danger)';
+    html += `<span class="chip" style="background:${c}22;color:${c}">${s.model}:${s.provider} ${s.uptime.toFixed(0)}%</span>`;
+  });
+  html += `</div></div>`;
+
+  el.innerHTML = html;
+
+  // Trend chart
+  const labels = runs.map(r => new Date(r.timestamp).toLocaleDateString() + ' ' + new Date(r.timestamp).getHours() + ':00');
+  const data = runs.map(r => r.total_pairs ? (r.success_count / r.total_pairs) * 100 : 0);
+  new Chart(document.getElementById('trendChart'), {
+    type: 'line',
+    data: { labels, datasets: [{ label: 'Success %', data, borderColor: 'var(--accent)', backgroundColor: 'rgba(255,210,30,0.08)', fill: true, tension: 0.3, pointRadius: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { x: { display: false }, y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: 'var(--text-dim)' } } }, plugins: { legend: { display: false } } }
+  });
+}
+
+/* ============================================================
+   Leaderboard
+   ============================================================ */
+function renderLeaderboard(el) {
+  const stats = pairStats();
+  if (!stats.length) { el.innerHTML = '<div class="card"><h3>Leaderboard</h3><p>No data yet.</p></div>'; return; }
+
+  let html = `<div class="card fade-in">
+    <h3 style="margin-bottom:10px">Leaderboard</h3>
+    <div style="margin-bottom:10px"><input id="lbSearch" placeholder="Search model or provider..." style="width:260px"></div>
+    <table id="lbTable"><thead><tr>
+      <th class="sortable" data-col="key">Pair</th>
+      <th class="sortable" data-col="uptime">Uptime %</th>
+      <th class="sortable" data-col="avgTime">Avg Time</th>
+      <th class="sortable" data-col="avgTtft">Avg TTFT</th>
+      <th class="sortable" data-col="avgTp">Throughput</th>
+      <th>Trend</th>
+    </tr></thead><tbody id="lbBody"></tbody></table>
+  </div>`;
+  el.innerHTML = html;
+
+  function renderRows(rows) {
+    const tbody = document.getElementById('lbBody');
+    tbody.innerHTML = rows.map(s => {
+      const vals = s.runs.filter(r=>r.success).map(r=>r.response_time);
+      return `<tr>
+        <td><span class="mono">${s.model}</span> ${providerChip(s.provider)}</td>
+        <td>${fmtPct(s.uptime)}</td>
+        <td>${fmtMs(s.avgTime)}</td>
+        <td>${fmtMs(s.avgTtft)}</td>
+        <td>${fmtTp(s.avgTp)}</td>
+        <td>${sparklineCanvas(vals.slice(-15), s.uptime>=80 ? 'var(--success)' : s.uptime>=50 ? 'var(--warning)' : 'var(--danger)')}</td>
+      </tr>`;
+    }).join('');
+  }
+  renderRows(stats);
+
+  let sortCol = 'uptime', sortAsc = false;
+  el.querySelectorAll('.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.col;
+      if (col === sortCol) sortAsc = !sortAsc; else { sortCol = col; sortAsc = false; }
+      const sorted = [...stats].sort((a,b) => {
+        const av = a[col] == null ? -Infinity : a[col];
+        const bv = b[col] == null ? -Infinity : b[col];
+        return sortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+      });
+      renderRows(sorted);
+    });
+  });
+
+  document.getElementById('lbSearch').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    renderRows(stats.filter(s => (s.model + ':' + s.provider).toLowerCase().includes(q)));
+  });
+}
+
+/* ============================================================
+   Explorer
+   ============================================================ */
+function renderExplorer(el) {
+  if (!results.length) { el.innerHTML = '<div class="card">No data yet.</div>'; return; }
+  let html = `<div class="card fade-in"><h3 style="margin-bottom:10px">Explorer</h3>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <select id="exPair" style="min-width:320px">`;
+  const stats = pairStats();
+  stats.forEach(s => {
+    html += `<option value="${s.key}">${s.model} @ ${PROVIDER_META[s.provider]?.name || s.provider} (${s.runs.length} runs)</option>`;
+  });
+  html += `</select></div>
+    <div class="grid grid-2">
+      <div class="card" style="padding:12px"><div class="chart-wrap" style="height:200px"><canvas id="exTime"></canvas></div></div>
+      <div class="card" style="padding:12px"><div class="chart-wrap" style="height:200px"><canvas id="exTtft"></canvas></div></div>
+    </div>
+    <div class="grid grid-2" style="margin-top:12px">
+      <div class="card" style="padding:12px"><div class="chart-wrap" style="height:200px"><canvas id="exErr"></canvas></div></div>
+      <div class="card" style="padding:12px"><h4 style="margin-bottom:8px">Run History</h4><div id="exTable" style="max-height:200px;overflow:auto"></div></div>
+    </div>
+  </div>`;
+  el.innerHTML = html;
+
+  let timeChart, ttftChart, errChart;
+  function update(key) {
+    const rows = results.filter(r => r.model + ':' + r.provider === key);
+    const labels = rows.map((_,i) => 'R' + (i+1));
+    const times = rows.map(r => r.success ? r.response_time : null);
+    const ttfts = rows.map(r => r.success && r.ttft != null ? r.ttft : null);
+    const cats = {};
+    rows.forEach(r => { const c = r.error_category || 'unknown'; cats[c] = (cats[c]||0)+1; });
+
+    if (timeChart) timeChart.destroy();
+    timeChart = new Chart(document.getElementById('exTime'), {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'Response Time', data: times, borderColor: 'var(--accent)', tension: 0.3, pointRadius: 3 }] },
+      options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color:'rgba(255,255,255,0.04)' }, ticks: { color:'var(--text-dim)' } }, x: { ticks: { color:'var(--text-dim)' } } }, plugins: { legend: { display:false } } }
+    });
+    if (ttftChart) ttftChart.destroy();
+    ttftChart = new Chart(document.getElementById('exTtft'), {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'TTFT', data: ttfts, borderColor: 'var(--blue)', tension: 0.3, pointRadius: 3 }] },
+      options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color:'rgba(255,255,255,0.04)' }, ticks: { color:'var(--text-dim)' } }, x: { ticks: { color:'var(--text-dim)' } } }, plugins: { legend: { display:false } } }
+    });
+    if (errChart) errChart.destroy();
+    errChart = new Chart(document.getElementById('exErr'), {
+      type: 'doughnut',
+      data: { labels: Object.keys(cats), datasets: [{ data: Object.values(cats), backgroundColor: ['var(--success)','var(--danger)','var(--warning)','var(--blue)','#9CA3AF'] }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: { labels: { color:'var(--text)' } } } }
+    });
+
+    let tbl = `<table><thead><tr><th>Run</th><th>Success</th><th>Time</th><th>TTFT</th><th>Category</th></tr></thead><tbody>`;
+    [...rows].reverse().forEach(r => {
+      tbl += `<tr><td>${r.run_id}</td><td>${r.success ? '✅' : '❌'}</td><td>${fmtMs(r.response_time)}</td><td>${fmtMs(r.ttft)}</td><td>${statusPill(r.error_category)}</td></tr>`;
+    });
+    tbl += `</tbody></table>`;
+    document.getElementById('exTable').innerHTML = tbl;
+  }
+
+  const sel = document.getElementById('exPair');
+  sel.addEventListener('change', () => update(sel.value));
+  if (stats[0]) update(stats[0].key);
+}
+
+/* ============================================================
+   Timeline
+   ============================================================ */
+function renderTimeline(el) {
+  if (!runs.length) { el.innerHTML = '<div class="card">No data yet.</div>'; return; }
+  const rev = [...runs].reverse();
+  let html = `<div class="card fade-in"><h3 style="margin-bottom:10px">Timeline</h3>`;
+  rev.forEach(run => {
+    const d = new Date(run.timestamp);
+    const rr = results.filter(r => r.run_id === run.id);
+    html += `<details style="margin-bottom:8px;border:1px solid var(--border);border-radius:10px;padding:10px">
+      <summary style="cursor:pointer;font-weight:600;outline:none">Run #${run.id} — ${d.toLocaleString()} — ${run.success_count}/${run.total_pairs} success</summary>
+      <div style="margin-top:10px">
+        <table><thead><tr><th>Pair</th><th>Success</th><th>Time</th><th>TTFT</th><th>Category</th></tr></thead><tbody>`;
+    rr.forEach(r => {
+      html += `<tr><td><span class="mono">${r.model}</span> ${providerChip(r.provider)}</td><td>${r.success ? '✅' : '❌'}</td><td>${fmtMs(r.response_time)}</td><td>${fmtMs(r.ttft)}</td><td>${statusPill(r.error_category)}</td></tr>`;
+    });
+    html += `</tbody></table></div></details>`;
+  });
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+/* ============================================================
+   Compare
+   ============================================================ */
+function renderCompare(el) {
+  if (!results.length) { el.innerHTML = '<div class="card">No data yet.</div>'; return; }
+  const stats = pairStats();
+  let html = `<div class="card fade-in"><h3 style="margin-bottom:10px">Compare</h3>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <select id="cmpA">${stats.map(s=>`<option value="${s.key}">${s.model} @ ${PROVIDER_META[s.provider]?.name || s.provider}</option>`).join('')}</select>
+      <span style="align-self:center">vs</span>
+      <select id="cmpB">${stats.map(s=>`<option value="${s.key}">${s.model} @ ${PROVIDER_META[s.provider]?.name || s.provider}</option>`).join('')}</select>
+    </div>
+    <div id="cmpBody"></div>
+    <div class="chart-wrap" style="height:260px"><canvas id="cmpChart"></canvas></div>
+  </div>`;
+  el.innerHTML = html;
+
+  let cmpChart;
+  function update() {
+    const aKey = document.getElementById('cmpA').value;
+    const bKey = document.getElementById('cmpB').value;
+    const a = stats.find(s => s.key === aKey);
+    const b = stats.find(s => s.key === bKey);
+    if (!a || !b) return;
+
+    const wins = { a:0, b:0, tie:0 };
+    const minLen = Math.min(a.runs.length, b.runs.length);
+    for (let i=0;i<minLen;i++) {
+      if (!a.runs[i].success || !b.runs[i].success) continue;
+      const diff = a.runs[i].response_time - b.runs[i].response_time;
+      if (diff < 0) wins.a++; else if (diff > 0) wins.b++; else wins.tie++;
+    }
+
+    const row = (label, av, bv, lowerIsBetter=true) => {
+      let winner = '';
+      if (av != null && bv != null) {
+        if (lowerIsBetter ? av < bv : av > bv) winner = '<span style="color:var(--success)">▲ A</span>';
+        else if (lowerIsBetter ? av > bv : av < bv) winner = '<span style="color:var(--accent)">▲ B</span>';
+        else winner = '<span style="color:var(--text-dim)">Tie</span>';
+      }
+      return `<tr><td>${label}</td><td>${av != null ? (typeof av === 'number' && av % 1 !== 0 ? av.toFixed(1) : av) : '—'}</td><td>${bv != null ? (typeof bv === 'number' && bv % 1 !== 0 ? bv.toFixed(1) : bv) : '—'}</td><td>${winner}</td></tr>`;
+    };
+
+    let body = `<table style="max-width:640px;margin-bottom:16px"><thead><tr><th>Metric</th><th>A</th><th>B</th><th>Winner</th></tr></thead><tbody>`;
+    body += row('Uptime %', a.uptime.toFixed(1), b.uptime.toFixed(1), false);
+    body += row('Avg Time', a.avgTime, b.avgTime);
+    body += row('Avg TTFT', a.avgTtft, b.avgTtft);
+    body += row('Throughput', a.avgTp, b.avgTp, false);
+    body += row('Wins (time)', wins.a, wins.b, false);
+    body += `</tbody></table>`;
+    document.getElementById('cmpBody').innerHTML = body;
+
+    const labels = a.runs.map((_,i) => 'R'+(i+1));
+    const aData = a.runs.map(r => r.success ? r.response_time : null);
+    const bData = b.runs.map(r => r.success ? r.response_time : null);
+    if (cmpChart) cmpChart.destroy();
+    cmpChart = new Chart(document.getElementById('cmpChart'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: aKey, data: aData, borderColor: 'var(--accent)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 3 },
+          { label: bKey, data: bData, borderColor: 'var(--blue)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 3 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color:'rgba(255,255,255,0.04)' }, ticks: { color:'var(--text-dim)' } }, x: { ticks: { color:'var(--text-dim)' } } }, plugins: { legend: { labels: { color:'var(--text)' } } } }
+    });
+  }
+
+  document.getElementById('cmpA').addEventListener('change', update);
+  document.getElementById('cmpB').addEventListener('change', update);
+  if (stats.length > 1) document.getElementById('cmpB').selectedIndex = 1;
+  update();
+}
+
+/* ============================================================
+   Providers
+   ============================================================ */
+function renderProviders(el) {
+  const pStats = providerStats();
+  if (!pStats.length) { el.innerHTML = '<div class="card">No data yet.</div>'; return; }
+
+  const best = pStats.reduce((a,b) => (!a || b.uptime > a.uptime) ? b : a, null);
+  const mostModels = pStats.reduce((a,b) => (!a || b.models > a.models) ? b : a, null);
+  const avgUptime = pStats.reduce((s,x)=>s+x.uptime,0)/pStats.length;
+
+  let html = `<div class="kpi-grid fade-in">
+    <div class="kpi"><div class="label">Providers</div><div class="value" style="color:var(--accent)">${pStats.length}</div></div>
+    <div class="kpi"><div class="label">Avg Uptime</div><div class="value" style="color:var(--accent)">${avgUptime.toFixed(1)}%</div></div>
+    <div class="kpi"><div class="label">Best Provider</div><div class="value" style="color:var(--accent)">${PROVIDER_META[best.provider]?.name || best.provider}</div><div class="delta">${best.uptime.toFixed(1)}% uptime</div></div>
+    <div class="kpi"><div class="label">Most Models</div><div class="value" style="color:var(--accent)">${PROVIDER_META[mostModels.provider]?.name || mostModels.provider}</div><div class="delta">${mostModels.models} models</div></div>
+  </div>`;
+
+  html += `<div class="card fade-in" style="animation-delay:.05s"><h3 style="margin-bottom:10px">Provider Ranking</h3>
+    <table><thead><tr><th>Provider</th><th>Models</th><th>Uptime %</th><th>Avg TTFT</th><th>Avg Latency</th><th>Success %</th><th>Trend</th></tr></thead><tbody>`;
+  pStats.sort((a,b) => b.uptime - a.uptime);
+  pStats.forEach(p => {
+    const vals = results.filter(r=>r.provider===p.provider && r.success).map(r=>r.response_time).slice(-15);
+    html += `<tr>
+      <td>${providerChip(p.provider)}</td>
+      <td>${p.models}</td>
+      <td>${fmtPct(p.uptime)}</td>
+      <td>${fmtMs(p.avgTtft)}</td>
+      <td>${fmtMs(p.avgLatency)}</td>
+      <td>${fmtPct(p.uptime)}</td>
+      <td>${sparklineCanvas(vals, p.uptime>=80 ? 'var(--success)' : p.uptime>=50 ? 'var(--warning)' : 'var(--danger)')}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>`;
+
+  // Per-provider drilldown charts
+  html += `<div class="card fade-in" style="animation-delay:.1s"><h3 style="margin-bottom:10px">Provider Drilldown: TTFT Distribution</h3>
+    <div class="chart-wrap"><canvas id="provTtft"></canvas></div></div>`;
+
+  html += `<div class="card fade-in" style="animation-delay:.15s"><h3 style="margin-bottom:10px">Provider Drilldown: Success Rate Over Time</h3>
+    <div class="chart-wrap"><canvas id="provSucc"></canvas></div></div>`;
+
+  el.innerHTML = html;
+
+  // TTFT distribution grouped bar per provider
+  const provLabels = pStats.map(p => PROVIDER_META[p.provider]?.name || p.provider);
+  const provTtfts = pStats.map(p => p.avgTtft || 0);
+  const provLat = pStats.map(p => p.avgLatency || 0);
+  new Chart(document.getElementById('provTtft'), {
+    type: 'bar',
+    data: {
+      labels: provLabels,
+      datasets: [
+        { label: 'Avg TTFT', data: provTtfts, backgroundColor: 'rgba(108,154,255,0.7)' },
+        { label: 'Avg Latency', data: provLat, backgroundColor: 'rgba(255,210,30,0.7)' }
+      ]
+    },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'var(--text-dim)'} }, x: { ticks:{color:'var(--text-dim)'} } }, plugins: { legend: { labels:{color:'var(--text)'} } } }
+  });
+
+  // Success rate per provider across runs
+  const runIds = [...new Set(runs.map(r=>r.id))].sort((a,b)=>a-b);
+  const succDatasets = pStats.map((p, idx) => {
+    const data = runIds.map(rid => {
+      const rr = results.filter(r => r.run_id===rid && r.provider===p.provider);
+      return rr.length ? (rr.filter(r=>r.success).length / rr.length)*100 : null;
+    });
+    const colors = ['#F55036','#6366F1','#00D4AA','#FF6B35','#A855F7','#38BDF8','#EC4899','#84CC16','#FFD21E','#2563EB','#7C3AED'];
+    return { label: PROVIDER_META[p.provider]?.name || p.provider, data, borderColor: colors[idx % colors.length], backgroundColor: 'transparent', tension: 0.3, pointRadius: 2 };
+  });
+  new Chart(document.getElementById('provSucc'), {
+    type: 'line',
+    data: { labels: runIds.map(id=>'#'+id), datasets: succDatasets },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'var(--text-dim)'} }, x: { ticks:{color:'var(--text-dim)'} } }, plugins: { legend: { labels:{color:'var(--text)'} } } }
+  });
+}
+
+/* ============================================================
+   Discovery
+   ============================================================ */
+function renderDiscovery(el) {
+  if (!snapshots.length) { el.innerHTML = '<div class="card">No discovery data yet.</div>'; return; }
+
+  // Classification donut from latest run snapshots
+  const lastRunId = runs[runs.length-1]?.id;
+  const lastSnaps = snapshots.filter(s => s.run_id === lastRunId);
+  const cats = {};
+  lastSnaps.forEach(s => { cats[s.status] = (cats[s.status]||0)+1; });
+
+  // Provider distribution
+  const provs = {};
+  lastSnaps.forEach(s => { provs[s.provider] = (provs[s.provider]||0)+1; });
+
+  let html = `<div class="grid grid-2 fade-in">
+    <div class="card"><h3 style="margin-bottom:10px">Classification Breakdown</h3><div class="chart-wrap"><canvas id="discDonut"></canvas></div></div>
+    <div class="card"><h3 style="margin-bottom:10px">Provider Distribution</h3><div class="chart-wrap"><canvas id="discBar"></canvas></div></div>
+  </div>`;
+
+  html += `<div class="card fade-in" style="animation-delay:.05s"><h3 style="margin-bottom:10px">Discovered Pairs</h3>
+    <div style="margin-bottom:10px"><input id="discSearch" placeholder="Search..." style="width:260px"></div>
+    <div style="max-height:360px;overflow:auto">
+    <table><thead><tr><th>Model</th><th>Provider</th><th>Status</th><th>Downloads</th><th>Likes</th></tr></thead><tbody id="discBody">`;
+  lastSnaps.forEach(s => {
+    html += `<tr><td class="mono">${s.model}</td><td>${providerChip(s.provider)}</td><td>${statusPill(s.status)}</td><td>${fmtNum(s.downloads)}</td><td>${fmtNum(s.likes)}</td></tr>`;
+  });
+  html += `</tbody></table></div></div>`;
+
+  // Volatility analytics
+  html += `<div class="card fade-in" style="animation-delay:.1s"><h3 style="margin-bottom:10px">Volatility Analytics</h3>
+    <div class="grid grid-3">`;
+
+  // Model churn: how many models appeared/disappeared between consecutive runs
+  const runIds = [...new Set(snapshots.map(s=>s.run_id))].sort((a,b)=>a-b);
+  let modelChurn = 0, providerChurn = 0, warmCold = 0, stableCount = 0, stableTotal = 0;
+  for (let i=1;i<runIds.length;i++) {
+    const prev = snapshots.filter(s=>s.run_id===runIds[i-1]);
+    const cur = snapshots.filter(s=>s.run_id===runIds[i]);
+    const prevModels = new Set(prev.map(s=>s.model));
+    const curModels = new Set(cur.map(s=>s.model));
+    const added = [...curModels].filter(m=>!prevModels.has(m)).length;
+    const removed = [...prevModels].filter(m=>!curModels.has(m)).length;
+    modelChurn += added + removed;
+
+    // Provider churn per model
+    const allModels = new Set([...prevModels, ...curModels]);
+    allModels.forEach(m => {
+      const prevP = new Set(prev.filter(s=>s.model===m).map(s=>s.provider));
+      const curP = new Set(cur.filter(s=>s.model===m).map(s=>s.provider));
+      const pAdded = [...curP].filter(p=>!prevP.has(p)).length;
+      const pRemoved = [...prevP].filter(p=>!curP.has(p)).length;
+      providerChurn += pAdded + pRemoved;
+    });
+
+    // Warm/cold transitions ( any status change )
+    const allPairs = new Set([...prev.map(s=>s.model+':'+s.provider), ...cur.map(s=>s.model+':'+s.provider)]);
+    allPairs.forEach(key => {
+      const prevS = prev.find(s=>s.model+':'+s.provider===key)?.status;
+      const curS = cur.find(s=>s.model+':'+s.provider===key)?.status;
+      if (prevS && curS && prevS !== curS) warmCold++;
+    });
+
+    // Stability score: pairs that were working in both runs
+    prev.forEach(s => {
+      const c = cur.find(x=>x.model===s.model && x.provider===s.provider);
+      if (c) {
+        stableTotal++;
+        if (s.status==='working' && c.status==='working') stableCount++;
+      }
+    });
+  }
+  const stability = stableTotal ? (stableCount / stableTotal)*100 : 0;
+
+  html += `
+    <div class="kpi"><div class="label">Model Churn Events</div><div class="value" style="color:var(--accent)">${modelChurn}</div></div>
+    <div class="kpi"><div class="label">Provider Churn Events</div><div class="value" style="color:var(--accent)">${providerChurn}</div></div>
+    <div class="kpi"><div class="label">Status Transitions</div><div class="value" style="color:var(--accent)">${warmCold}</div></div>
+    <div class="kpi"><div class="label">Stability Score</div><div class="value" style="color:var(--accent)">${stability.toFixed(1)}%</div><div class="delta">Working→Working across runs</div></div>
+  </div></div>`;
+
+  el.innerHTML = html;
+
+  // Charts
+  new Chart(document.getElementById('discDonut'), {
+    type: 'doughnut',
+    data: { labels: Object.keys(cats), datasets: [{ data: Object.values(cats), backgroundColor: ['var(--success)','var(--danger)','var(--warning)','var(--blue)','#9CA3AF','#A855F7','#EC4899'] }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: { labels: { color:'var(--text)' } } } }
+  });
+  const pLabels = Object.keys(provs);
+  const pData = Object.values(provs);
+  new Chart(document.getElementById('discBar'), {
+    type: 'bar',
+    data: { labels: pLabels.map(p=>PROVIDER_META[p]?.name || p), datasets: [{ label: 'Pairs', data: pData, backgroundColor: 'rgba(255,210,30,0.7)' }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'var(--text-dim)'} }, x: { ticks:{color:'var(--text-dim)'} } }, plugins: { legend: { display:false } } }
+  });
+
+  // Search
+  document.getElementById('discSearch').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    const body = document.getElementById('discBody');
+    const rows = lastSnaps.filter(s => (s.model + ':' + s.provider + ' ' + s.status).toLowerCase().includes(q));
+    body.innerHTML = rows.map(s => `<tr><td class="mono">${s.model}</td><td>${providerChip(s.provider)}</td><td>${statusPill(s.status)}</td><td>${fmtNum(s.downloads)}</td><td>${fmtNum(s.likes)}</td></tr>`).join('');
+  });
+}
+
+/* ============================================================
+   Boot
+   ============================================================ */
+loadDb().catch(e => {
+  document.getElementById('loading').innerHTML = `<p style="color:var(--danger)">Failed to load database: ${e.message}</p><p style="color:var(--text-dim)">Ensure history.db exists in the same directory.</p>`;
+});
+</script>
+</body>
+</html>
