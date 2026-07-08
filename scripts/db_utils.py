@@ -60,25 +60,29 @@ def get_conn():
 
 def init_db():
     conn = get_conn()
-    conn.executescript(SCHEMA)
-    conn.commit()
-    conn.close()
+    try:
+        conn.executescript(SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def prune_old_runs(max_runs: int = 360):
     """Keep only the most recent max_runs runs to cap DB size."""
     conn = get_conn()
-    cur = conn.execute(
-        "SELECT id FROM runs ORDER BY id DESC LIMIT 1 OFFSET ?", (max_runs,)
-    )
-    row = cur.fetchone()
-    if row:
-        cutoff = row["id"]
-        conn.execute("DELETE FROM model_results WHERE run_id <= ?", (cutoff,))
-        conn.execute("DELETE FROM discovery_snapshots WHERE run_id <= ?", (cutoff,))
-        conn.execute("DELETE FROM runs WHERE id <= ?", (cutoff,))
-        conn.commit()
-    conn.close()
+    try:
+        cur = conn.execute(
+            "SELECT id FROM runs ORDER BY id DESC LIMIT 1 OFFSET ?", (max_runs,)
+        )
+        row = cur.fetchone()
+        if row:
+            cutoff = row["id"]
+            conn.execute("DELETE FROM model_results WHERE run_id <= ?", (cutoff,))
+            conn.execute("DELETE FROM discovery_snapshots WHERE run_id <= ?", (cutoff,))
+            conn.execute("DELETE FROM runs WHERE id <= ?", (cutoff,))
+            conn.commit()
+    finally:
+        conn.close()
 
 
 def insert_run(
@@ -94,87 +98,95 @@ def insert_run(
     pairs_unsupported: int,
 ) -> int:
     conn = get_conn()
-    cur = conn.execute(
-        """
-        INSERT INTO runs
-        (timestamp, prompt, success_count, total_pairs, fastest_pair, fastest_time,
-         candidates_found, pairs_working, pairs_loading, pairs_rate_limited, pairs_unsupported)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            datetime.now(timezone.utc).isoformat(),
-            prompt,
-            success_count,
-            total_pairs,
-            fastest_pair,
-            fastest_time,
-            candidates_found,
-            pairs_working,
-            pairs_loading,
-            pairs_rate_limited,
-            pairs_unsupported,
-        ),
-    )
-    run_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return run_id
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO runs
+            (timestamp, prompt, success_count, total_pairs, fastest_pair, fastest_time,
+             candidates_found, pairs_working, pairs_loading, pairs_rate_limited, pairs_unsupported)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                prompt,
+                success_count,
+                total_pairs,
+                fastest_pair,
+                fastest_time,
+                candidates_found,
+                pairs_working,
+                pairs_loading,
+                pairs_rate_limited,
+                pairs_unsupported,
+            ),
+        )
+        run_id = cur.lastrowid
+        conn.commit()
+        return run_id
+    finally:
+        conn.close()
 
 
 def insert_model_result(run_id: int, result: dict):
     conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO model_results
-        (run_id, model, provider, success, error, error_category,
-         response_time, ttft, tokens_generated, total_tokens, response)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            run_id,
-            result.get("model"),
-            result.get("provider"),
-            1 if result.get("success") else 0,
-            result.get("error"),
-            result.get("error_category"),
-            result.get("response_time"),
-            result.get("ttft"),
-            result.get("tokens_generated"),
-            result.get("total_tokens"),
-            result.get("response"),
-        ),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """
+            INSERT INTO model_results
+            (run_id, model, provider, success, error, error_category,
+             response_time, ttft, tokens_generated, total_tokens, response)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                result.get("model"),
+                result.get("provider"),
+                1 if result.get("success") else 0,
+                result.get("error"),
+                result.get("error_category"),
+                result.get("response_time"),
+                result.get("ttft"),
+                result.get("tokens_generated"),
+                result.get("total_tokens"),
+                result.get("response"),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def insert_discovery_snapshot(run_id: int, snapshot: dict):
     conn = get_conn()
-    conn.execute(
-        """
-        INSERT INTO discovery_snapshots
-        (run_id, model, provider, status, downloads, likes)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            run_id,
-            snapshot["model"],
-            snapshot["provider"],
-            snapshot.get("status", "unknown"),
-            snapshot.get("downloads"),
-            snapshot.get("likes"),
-        ),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """
+            INSERT INTO discovery_snapshots
+            (run_id, model, provider, status, downloads, likes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                snapshot["model"],
+                snapshot["provider"],
+                snapshot.get("status", "unknown"),
+                snapshot.get("downloads"),
+                snapshot.get("likes"),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def dump_db_to_json():
     """Export full DB as JSON for potential debugging or backup."""
     conn = get_conn()
-    data = {}
-    for table in ("runs", "model_results", "discovery_snapshots"):
-        rows = conn.execute(f"SELECT * FROM {table}").fetchall()
-        data[table] = [dict(r) for r in rows]
-    conn.close()
-    return data
+    try:
+        data = {}
+        for table in ("runs", "model_results", "discovery_snapshots"):
+            rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+            data[table] = [dict(r) for r in rows]
+        return data
+    finally:
+        conn.close()
