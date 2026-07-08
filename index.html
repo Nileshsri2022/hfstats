@@ -7,8 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha512-CQBWl4fJHWbryGE+Pc7UAxWMUMNMWzWxF4SQo9CgkJIN1kx6djDQZjh3Y8SZ1d+6I+1zze6Z7kHXO7q3UyZAWw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.min.js" integrity="sha512-f4bgk3aqQ6nrGVs1Aw0R9kH598VsHnz+xXmRa3kv0wu+WhVp/58fExWhUnYyOyT9R1xA+ILShDUeMBg5hC7CmA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <style>
 :root {
   --bg: #0B0F19;
@@ -201,6 +201,19 @@ select:focus, input:focus { border-color: var(--accent); }
 
 <script>
 /* ============================================================
+   Security: HTML escaping for DB-derived values
+   ============================================================ */
+function escapeHtml(v) {
+  if (v == null) return '';
+  return String(v).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+function pairLabel(model, provider) {
+  return escapeHtml(model) + ':' + escapeHtml(provider);
+}
+
+/* ============================================================
    Provider meta
    ============================================================ */
 const PROVIDER_META = {
@@ -218,11 +231,15 @@ const PROVIDER_META = {
 };
 function providerChip(provider) {
   const m = PROVIDER_META[provider] || { name: provider, color: '#9CA3AF' };
-  return `<span class="provider-chip" style="background:${m.color}22;color:${m.color}">${m.name}</span>`;
+  return `<span class="provider-chip" style="background:${m.color}22;color:${m.color}">${escapeHtml(m.name)}</span>`;
 }
 function statusPill(status) {
-  const cls = 'status-' + (status || 'unknown');
-  return `<span class="status-pill ${cls}">${status || 'unknown'}</span>`;
+  const s = status || 'unknown';
+  const cls = 'status-' + s.replace(/[^a-z0-9_-]/gi, '');
+  return `<span class="status-pill ${cls}">${escapeHtml(s)}</span>`;
+}
+function providerName(provider) {
+  return escapeHtml(PROVIDER_META[provider]?.name || provider);
 }
 function fmtMs(v) { return v == null ? '—' : v + ' ms'; }
 function fmtNum(v) { return v == null ? '—' : v.toLocaleString(); }
@@ -395,9 +412,9 @@ function renderOverview(el) {
     ${kpi('Discovered', fmtNum(last.candidates_found))}
     ${kpi('Working', fmtNum(last.pairs_working))}
     ${kpi('Success Rate', fmtPct(last.total_pairs ? (last.success_count/last.total_pairs)*100 : 0))}
-    ${kpi('Best TTFT', bestTtft ? fmtMs(bestTtft.ttft) : '—', bestTtft ? `${bestTtft.model}:${bestTtft.provider}` : '')}
-    ${kpi('Best Throughput', bestTp ? fmtTp(bestTp.throughput) : '—', bestTp ? `${bestTp.model}:${bestTp.provider}` : '')}
-    ${kpi('Most Reliable', bestRel ? fmtPct(bestRel.uptime) : '—', bestRel ? `${bestRel.model}:${bestRel.provider}` : '')}
+    ${kpi('Best TTFT', bestTtft ? fmtMs(bestTtft.ttft) : '—', bestTtft ? pairLabel(bestTtft.model, bestTtft.provider) : '')}
+    ${kpi('Best Throughput', bestTp ? fmtTp(bestTp.throughput) : '—', bestTp ? pairLabel(bestTp.model, bestTp.provider) : '')}
+    ${kpi('Most Reliable', bestRel ? fmtPct(bestRel.uptime) : '—', bestRel ? pairLabel(bestRel.model, bestRel.provider) : '')}
   </div>`;
 
   // Success trend
@@ -409,7 +426,7 @@ function renderOverview(el) {
       <table><thead><tr><th>Pair</th><th>Time</th><th>TTFT</th><th>Tok/s</th></tr></thead><tbody>`;
   const topFast = [...success].sort((a,b) => a.response_time - b.response_time).slice(0,10);
   topFast.forEach(r => {
-    html += `<tr><td><span class="mono">${r.model}</span> ${providerChip(r.provider)}</td><td>${fmtMs(r.response_time)}</td><td>${fmtMs(r.ttft)}</td><td>${fmtTp(r.throughput)}</td></tr>`;
+    html += `<tr><td><span class="mono">${escapeHtml(r.model)}</span> ${providerChip(r.provider)}</td><td>${fmtMs(r.response_time)}</td><td>${fmtMs(r.ttft)}</td><td>${fmtTp(r.throughput)}</td></tr>`;
   });
   html += `</tbody></table></div>`;
 
@@ -417,7 +434,7 @@ function renderOverview(el) {
     <table><thead><tr><th>Pair</th><th>TTFT</th><th>Time</th><th>Tok/s</th></tr></thead><tbody>`;
   const topTtft = [...success].filter(r=>r.ttft!=null).sort((a,b)=>a.ttft-b.ttft).slice(0,10);
   topTtft.forEach(r => {
-    html += `<tr><td><span class="mono">${r.model}</span> ${providerChip(r.provider)}</td><td>${fmtMs(r.ttft)}</td><td>${fmtMs(r.response_time)}</td><td>${fmtTp(r.throughput)}</td></tr>`;
+    html += `<tr><td><span class="mono">${escapeHtml(r.model)}</span> ${providerChip(r.provider)}</td><td>${fmtMs(r.ttft)}</td><td>${fmtMs(r.response_time)}</td><td>${fmtTp(r.throughput)}</td></tr>`;
   });
   html += `</tbody></table></div></div>`;
 
@@ -426,7 +443,7 @@ function renderOverview(el) {
   const stats = pairStats().sort((a,b) => b.uptime - a.uptime).slice(0, 20);
   stats.forEach(s => {
     const c = s.uptime >= 95 ? 'var(--success)' : s.uptime >= 70 ? 'var(--warning)' : 'var(--danger)';
-    html += `<span class="chip" style="background:${c}22;color:${c}">${s.model}:${s.provider} ${s.uptime.toFixed(0)}%</span>`;
+    html += `<span class="chip" style="background:${c}22;color:${c}">${pairLabel(s.model, s.provider)} ${s.uptime.toFixed(0)}%</span>`;
   });
   html += `</div></div>`;
 
@@ -468,7 +485,7 @@ function renderLeaderboard(el) {
     tbody.innerHTML = rows.map(s => {
       const vals = s.runs.filter(r=>r.success).map(r=>r.response_time);
       return `<tr>
-        <td><span class="mono">${s.model}</span> ${providerChip(s.provider)}</td>
+        <td><span class="mono">${escapeHtml(s.model)}</span> ${providerChip(s.provider)}</td>
         <td>${fmtPct(s.uptime)}</td>
         <td>${fmtMs(s.avgTime)}</td>
         <td>${fmtMs(s.avgTtft)}</td>
@@ -509,7 +526,7 @@ function renderExplorer(el) {
       <select id="exPair" style="min-width:320px">`;
   const stats = pairStats();
   stats.forEach(s => {
-    html += `<option value="${s.key}">${s.model} @ ${PROVIDER_META[s.provider]?.name || s.provider} (${s.runs.length} runs)</option>`;
+    html += `<option value="${escapeHtml(s.key)}">${escapeHtml(s.model)} @ ${providerName(s.provider)} (${s.runs.length} runs)</option>`;
   });
   html += `</select></div>
     <div class="grid grid-2">
@@ -579,7 +596,7 @@ function renderTimeline(el) {
       <div style="margin-top:10px">
         <table><thead><tr><th>Pair</th><th>Success</th><th>Time</th><th>TTFT</th><th>Category</th></tr></thead><tbody>`;
     rr.forEach(r => {
-      html += `<tr><td><span class="mono">${r.model}</span> ${providerChip(r.provider)}</td><td>${r.success ? '✅' : '❌'}</td><td>${fmtMs(r.response_time)}</td><td>${fmtMs(r.ttft)}</td><td>${statusPill(r.error_category)}</td></tr>`;
+      html += `<tr><td><span class="mono">${escapeHtml(r.model)}</span> ${providerChip(r.provider)}</td><td>${r.success ? '✅' : '❌'}</td><td>${fmtMs(r.response_time)}</td><td>${fmtMs(r.ttft)}</td><td>${statusPill(r.error_category)}</td></tr>`;
     });
     html += `</tbody></table></div></details>`;
   });
@@ -595,9 +612,9 @@ function renderCompare(el) {
   const stats = pairStats();
   let html = `<div class="card fade-in"><h3 style="margin-bottom:10px">Compare</h3>
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
-      <select id="cmpA">${stats.map(s=>`<option value="${s.key}">${s.model} @ ${PROVIDER_META[s.provider]?.name || s.provider}</option>`).join('')}</select>
+      <select id="cmpA">${stats.map(s=>`<option value="${escapeHtml(s.key)}">${escapeHtml(s.model)} @ ${providerName(s.provider)}</option>`).join('')}</select>
       <span style="align-self:center">vs</span>
-      <select id="cmpB">${stats.map(s=>`<option value="${s.key}">${s.model} @ ${PROVIDER_META[s.provider]?.name || s.provider}</option>`).join('')}</select>
+      <select id="cmpB">${stats.map(s=>`<option value="${escapeHtml(s.key)}">${escapeHtml(s.model)} @ ${providerName(s.provider)}</option>`).join('')}</select>
     </div>
     <div id="cmpBody"></div>
     <div class="chart-wrap" style="height:260px"><canvas id="cmpChart"></canvas></div>
@@ -676,8 +693,8 @@ function renderProviders(el) {
   let html = `<div class="kpi-grid fade-in">
     <div class="kpi"><div class="label">Providers</div><div class="value" style="color:var(--accent)">${pStats.length}</div></div>
     <div class="kpi"><div class="label">Avg Uptime</div><div class="value" style="color:var(--accent)">${avgUptime.toFixed(1)}%</div></div>
-    <div class="kpi"><div class="label">Best Provider</div><div class="value" style="color:var(--accent)">${PROVIDER_META[best.provider]?.name || best.provider}</div><div class="delta">${best.uptime.toFixed(1)}% uptime</div></div>
-    <div class="kpi"><div class="label">Most Models</div><div class="value" style="color:var(--accent)">${PROVIDER_META[mostModels.provider]?.name || mostModels.provider}</div><div class="delta">${mostModels.models} models</div></div>
+    <div class="kpi"><div class="label">Best Provider</div><div class="value" style="color:var(--accent)">${providerName(best.provider)}</div><div class="delta">${best.uptime.toFixed(1)}% uptime</div></div>
+    <div class="kpi"><div class="label">Most Models</div><div class="value" style="color:var(--accent)">${providerName(mostModels.provider)}</div><div class="delta">${mostModels.models} models</div></div>
   </div>`;
 
   html += `<div class="card fade-in" style="animation-delay:.05s"><h3 style="margin-bottom:10px">Provider Ranking</h3>
@@ -765,7 +782,7 @@ function renderDiscovery(el) {
     <div style="max-height:360px;overflow:auto">
     <table><thead><tr><th>Model</th><th>Provider</th><th>Status</th><th>Downloads</th><th>Likes</th></tr></thead><tbody id="discBody">`;
   lastSnaps.forEach(s => {
-    html += `<tr><td class="mono">${s.model}</td><td>${providerChip(s.provider)}</td><td>${statusPill(s.status)}</td><td>${fmtNum(s.downloads)}</td><td>${fmtNum(s.likes)}</td></tr>`;
+    html += `<tr><td class="mono">${escapeHtml(s.model)}</td><td>${providerChip(s.provider)}</td><td>${statusPill(s.status)}</td><td>${fmtNum(s.downloads)}</td><td>${fmtNum(s.likes)}</td></tr>`;
   });
   html += `</tbody></table></div></div>`;
 
@@ -842,7 +859,7 @@ function renderDiscovery(el) {
     const q = e.target.value.toLowerCase();
     const body = document.getElementById('discBody');
     const rows = lastSnaps.filter(s => (s.model + ':' + s.provider + ' ' + s.status).toLowerCase().includes(q));
-    body.innerHTML = rows.map(s => `<tr><td class="mono">${s.model}</td><td>${providerChip(s.provider)}</td><td>${statusPill(s.status)}</td><td>${fmtNum(s.downloads)}</td><td>${fmtNum(s.likes)}</td></tr>`).join('');
+    body.innerHTML = rows.map(s => `<tr><td class="mono">${escapeHtml(s.model)}</td><td>${providerChip(s.provider)}</td><td>${statusPill(s.status)}</td><td>${fmtNum(s.downloads)}</td><td>${fmtNum(s.likes)}</td></tr>`).join('');
   });
 }
 
