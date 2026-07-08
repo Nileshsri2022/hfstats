@@ -170,7 +170,15 @@ def main():
     for i, p in enumerate(capped):
         groups[["group1", "group2", "group3"][i % 3]].append(p)
 
-    my_pairs = groups.get(MODEL_GROUP, [])
+    if MODEL_GROUP not in groups:
+        print(
+            f"ERROR: invalid MODEL_GROUP={MODEL_GROUP!r}; expected one of "
+            f"{sorted(groups)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    my_pairs = groups[MODEL_GROUP]
     print(f"Group {MODEL_GROUP}: {len(my_pairs)} pairs to benchmark")
 
     results = []
