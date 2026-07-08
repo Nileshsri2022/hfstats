@@ -9,6 +9,12 @@ dist/
 build/
 .ipynb_checkpoints/
 *.log
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
 .DS_Store
 Thumbs.db
 .history/
