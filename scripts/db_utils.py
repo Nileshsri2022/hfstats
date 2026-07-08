@@ -1,8 +1,10 @@
 """SQLite helpers for HFStats benchmark database."""
 import sqlite3
-import json
 import os
-from datetime import datetime, timezone
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+from common import utc_now_iso
 
 DB_PATH = os.environ.get("DB_PATH", "history.db")
 
@@ -102,7 +104,7 @@ def insert_run(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            datetime.now(timezone.utc).isoformat(),
+            utc_now_iso(),
             prompt,
             success_count,
             total_pairs,

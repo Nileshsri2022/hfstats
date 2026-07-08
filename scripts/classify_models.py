@@ -5,12 +5,18 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(__file__))
+from common import (
+    build_chat_request,
+    categorize_http_status,
+    load_json,
+    utc_now_iso,
+    write_json,
+)
 
 CANDIDATES_PATH = os.environ.get("CANDIDATES_PATH", "scripts/candidates.json")
 OUT_PATH = os.environ.get("CLASSIFIED_PATH", "scripts/classified.json")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-INFERENCE_URL = "https://api-inference.huggingface.co/models/"
 PROMPT = "Hello, count to three: 1,"
 TINY_MAX_TOKENS = 5
 REQUEST_TIMEOUT = 25
@@ -19,25 +25,8 @@ BACKOFF_DELAY = 10
 
 
 def classify_pair(model: str, provider: str) -> dict:
-    url = f"{INFERENCE_URL}{model}:{provider}"
-    payload = json.dumps(
-        {
-            "model": f"{model}:{provider}",
-            "messages": [{"role": "user", "content": PROMPT}],
-            "max_tokens": TINY_MAX_TOKENS,
-            "temperature": 0.7,
-        }
-    ).encode("utf-8")
-
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {HF_TOKEN}",
-        },
-        method="POST",
+    req = build_chat_request(
+        model, provider, PROMPT, TINY_MAX_TOKENS, provider_in_url=True
     )
 
     try:
@@ -73,19 +62,10 @@ def classify_pair(model: str, provider: str) -> dict:
         status = e.code
         body = e.read().decode("utf-8", errors="replace")
         detail = body[:200]
-        if status == 503:
-            return {"status": "loading", "detail": detail}
-        if status == 529:
-            return {"status": "overloaded", "detail": detail}
-        if status == 429:
-            return {"status": "rate_limited", "detail": detail}
-        if status == 402:
-            return {"status": "quota_exceeded", "detail": detail}
-        if status == 404:
-            return {"status": "not_found", "detail": detail}
-        if status == 400:
-            return {"status": "unsupported", "detail": detail}
-        return {"status": "provider_bug", "detail": f"http {status}: {detail}"}
+        category = categorize_http_status(status)
+        if category == "provider_bug":
+            detail = f"http {status}: {detail}"
+        return {"status": category, "detail": detail}
 
     except urllib.error.URLError as e:
         reason = str(e.reason).lower()
@@ -99,8 +79,7 @@ def classify_pair(model: str, provider: str) -> dict:
 
 def main():
     print("Loading candidates...")
-    with open(CANDIDATES_PATH, "r", encoding="utf-8") as f:
-        candidates = json.load(f)
+    candidates = load_json(CANDIDATES_PATH) or {}
 
     pairs = candidates.get("pairs", [])
     results = []
@@ -153,15 +132,13 @@ def main():
         )
 
     payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": utc_now_iso(),
         "total": len(results),
         "counts": counts,
         "pairs": results,
     }
 
-    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    write_json(OUT_PATH, payload)
 
     print(f"Wrote classified pairs to {OUT_PATH}")
     for k, v in counts.items():

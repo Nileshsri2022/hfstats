@@ -1,11 +1,10 @@
 """Merge parallel benchmark results and discovery snapshots into SQLite DB."""
-import json
 import os
 import sys
-from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 import db_utils
+from common import load_json
 
 CLASSIFIED_PATH = os.environ.get("CLASSIFIED_PATH", "scripts/classified.json")
 GROUP_PATHS = [
@@ -13,13 +12,6 @@ GROUP_PATHS = [
     os.environ.get("RESULTS_GROUP2", "scripts/results-group2.json"),
     os.environ.get("RESULTS_GROUP3", "scripts/results-group3.json"),
 ]
-
-
-def load_json(path: str):
-    if not os.path.exists(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 
 def main():
