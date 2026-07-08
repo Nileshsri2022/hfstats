@@ -32,12 +32,29 @@ def main():
 
     all_results = []
     prompt = ""
+    missing_groups = []
     for path in GROUP_PATHS:
         data = load_json(path)
         if data:
             all_results.extend(data.get("results", []))
             if data.get("prompt"):
                 prompt = data["prompt"]
+        else:
+            missing_groups.append(path)
+
+    if missing_groups:
+        print(
+            "WARNING: missing benchmark result files (their pairs will be absent "
+            f"from this run): {', '.join(missing_groups)}",
+            file=sys.stderr,
+        )
+    if not all_results:
+        print(
+            "ERROR: no benchmark results found in any group file; refusing to "
+            "record an empty run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Compute aggregate stats
     success_count = sum(1 for r in all_results if r.get("success"))

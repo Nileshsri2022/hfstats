@@ -12,6 +12,8 @@ API_URL = "https://huggingface.co/api/models"
 MIN_DOWNLOADS = int(os.environ.get("MIN_DOWNLOADS", "10000"))
 LIMIT = int(os.environ.get("DISCOVER_LIMIT", "500"))
 OUT_PATH = os.environ.get("CANDIDATES_PATH", "scripts/candidates.json")
+MAX_ATTEMPTS = 5
+TRANSIENT_BACKOFF = 5
 
 
 def fetch_models():
@@ -22,9 +24,11 @@ def fetch_models():
     while len(all_models) < LIMIT and next_url:
         req = urllib.request.Request(next_url, headers={"Accept": "application/json"})
         data = None
+        page_url = next_url
         next_url = None
+        last_error = None
 
-        for attempt in range(5):
+        for attempt in range(MAX_ATTEMPTS):
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     raw = resp.read().decode("utf-8")
@@ -38,15 +42,29 @@ def fetch_models():
                         next_url = None
                 break
             except urllib.error.HTTPError as e:
+                last_error = e
                 if e.code == 429:
                     wait = int(e.headers.get("Retry-After", 30))
-                    print(f"Rate limited, retrying in {wait}s...")
+                    print(f"Rate limited, retrying in {wait}s (attempt {attempt + 1}/{MAX_ATTEMPTS})...")
                     time.sleep(wait)
                 else:
                     raise
+            except urllib.error.URLError as e:
+                # Transient network/timeout error: retry with backoff.
+                last_error = e
+                print(f"Network error ({e.reason}), retrying in {TRANSIENT_BACKOFF}s (attempt {attempt + 1}/{MAX_ATTEMPTS})...")
+                time.sleep(TRANSIENT_BACKOFF)
 
-        if not data or not isinstance(data, list):
-            break
+        # If we exhausted all attempts without a successful fetch, fail loudly
+        # instead of silently returning a partial/empty candidate list.
+        if data is None:
+            raise RuntimeError(
+                f"Failed to fetch models after {MAX_ATTEMPTS} attempts for {page_url}: {last_error}"
+            )
+        if not isinstance(data, list):
+            raise RuntimeError(
+                f"Unexpected response structure from HF API (expected a list, got {type(data).__name__}) for {page_url}"
+            )
 
         batch_count += 1
 
