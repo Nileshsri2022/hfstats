@@ -1,12 +1,15 @@
 """HF API discovery with provider-level extraction."""
 import json
 import os
+import sys
 import time
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(__file__))
+from common import utc_now_iso, write_json
 
 API_URL = "https://huggingface.co/api/models"
 MIN_DOWNLOADS = int(os.environ.get("MIN_DOWNLOADS", "10000"))
@@ -117,15 +120,13 @@ def main():
     models = fetch_models()
     pairs = extract_pairs(models)
 
-    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": utc_now_iso(),
         "total_models": len(models),
         "total_pairs": len(pairs),
         "pairs": pairs,
     }
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    write_json(OUT_PATH, payload)
 
     print(f"Wrote {len(models)} models, {len(pairs)} pairs to {OUT_PATH}")
 

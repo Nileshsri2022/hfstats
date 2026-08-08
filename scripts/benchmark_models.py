@@ -6,12 +6,18 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(__file__))
+from common import (
+    build_chat_request,
+    categorize_http_status,
+    load_json,
+    write_json,
+)
+
 CLASSIFIED_PATH = os.environ.get("CLASSIFIED_PATH", "scripts/classified.json")
 OUT_PATH = os.environ.get("RESULTS_PATH", "scripts/results.json")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
 MODEL_GROUP = os.environ.get("MODEL_GROUP", "group1")
 MAX_BENCHMARK_PAIRS = int(os.environ.get("MAX_BENCHMARK_PAIRS", "50"))
-INFERENCE_URL = "https://api-inference.huggingface.co/models/"
 PROMPT = (
     "Write a short paragraph explaining the concept of neural networks "
     "in machine learning. Be concise but informative."
@@ -21,27 +27,7 @@ REQUEST_TIMEOUT = 120
 
 
 def benchmark_pair(model: str, provider: str) -> dict:
-    url = f"{INFERENCE_URL}{model}"
-    payload = json.dumps(
-        {
-            "model": f"{model}:{provider}",
-            "messages": [{"role": "user", "content": PROMPT}],
-            "max_tokens": MAX_TOKENS,
-            "temperature": 0.7,
-            "stream": True,
-        }
-    ).encode("utf-8")
-
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-            "Authorization": f"Bearer {HF_TOKEN}",
-        },
-        method="POST",
-    )
+    req = build_chat_request(model, provider, PROMPT, MAX_TOKENS, stream=True)
 
     start = time.perf_counter()
     ttft = None
@@ -122,20 +108,7 @@ def benchmark_pair(model: str, provider: str) -> dict:
         response_time = int((end - start) * 1000)
         body = e.read().decode("utf-8", errors="replace")[:500]
         status = e.code
-        if status == 429:
-            error_category = "rate_limited"
-        elif status == 503:
-            error_category = "loading"
-        elif status == 529:
-            error_category = "overloaded"
-        elif status == 402:
-            error_category = "quota_exceeded"
-        elif status == 404:
-            error_category = "not_found"
-        elif status == 400:
-            error_category = "unsupported"
-        else:
-            error_category = "provider_bug"
+        error_category = categorize_http_status(status)
         return {
             "model": model,
             "provider": provider,
@@ -186,8 +159,7 @@ def benchmark_pair(model: str, provider: str) -> dict:
 
 def main():
     print(f"Loading classified pairs from {CLASSIFIED_PATH} ...")
-    with open(CLASSIFIED_PATH, "r", encoding="utf-8") as f:
-        classified = json.load(f)
+    classified = load_json(CLASSIFIED_PATH) or {}
 
     working = [p for p in classified.get("pairs", []) if p.get("status") == "working"]
     working.sort(key=lambda x: x.get("downloads", 0), reverse=True)
@@ -226,9 +198,7 @@ def main():
         "results": results,
     }
 
-    os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    write_json(OUT_PATH, payload)
 
     print(f"Wrote {len(results)} results to {OUT_PATH}")
 
