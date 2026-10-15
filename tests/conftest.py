@@ -52,6 +52,13 @@ def make_http_error(code, body="", headers=None):
     )
 
 
+@pytest.fixture(autouse=True)
+def _not_in_github_actions(monkeypatch):
+    """Run every test as if outside GitHub Actions (no ::annotation:: output),
+    so results are identical locally and in CI. Tests opt in explicitly."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
     """Point db_utils at a fresh temporary SQLite database."""

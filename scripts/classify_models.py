@@ -10,10 +10,12 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
+import common
 from common import (
     build_chat_request,
     categorize_error_text,
     categorize_http_status,
+    gh_annotation,
     load_json,
     utc_now_iso,
     write_json,
@@ -22,6 +24,11 @@ from common import (
 CANDIDATES_PATH = os.environ.get("CANDIDATES_PATH", "scripts/candidates.json")
 OUT_PATH = os.environ.get("CLASSIFIED_PATH", "scripts/classified.json")
 PROMPT = "Hello, count to three: 1,"
+TOKEN_HINT = (
+    "HF_TOKEN must be a Hugging Face access token with the "
+    "'Make calls to Inference Providers' permission, on an account with "
+    "inference credits left."
+)
 TINY_MAX_TOKENS = 5
 REQUEST_TIMEOUT = 25
 RETRY_DELAY = 5
@@ -140,6 +147,14 @@ def main():
         print(f"ERROR: no candidate pairs in {CANDIDATES_PATH}; nothing to classify.", file=sys.stderr)
         sys.exit(1)
 
+    if not common.HF_TOKEN:
+        # Without a token the router rejects every request with 401; fail fast
+        # with an actionable message instead of sending hundreds of requests.
+        msg = f"HF_TOKEN is not set (add it as a repository secret). {TOKEN_HINT}"
+        print(f"ERROR: {msg}", file=sys.stderr)
+        gh_annotation("error", msg, title="Missing HF_TOKEN")
+        sys.exit(1)
+
     providers = {p["provider"] for p in pairs}
     print(f"Classifying {len(pairs)} pairs across {len(providers)} providers (concurrency={CONCURRENCY})...")
     infos = classify_all(pairs)
@@ -174,21 +189,23 @@ def main():
     for k, v in counts.items():
         if v:
             print(f"  {k}: {v}")
+    summary = ", ".join(f"{v} {k}" for k, v in counts.items() if v)
 
     if counts["working"] == 0:
         # Every pair failing at once is (almost) never the providers' fault: it
         # means a broken endpoint, a bad token or exhausted credits. Fail the
         # workflow instead of quietly recording another empty run.
         print("ERROR: no pair is working. Most common failures:", file=sys.stderr)
-        common = Counter((r["status"], str(r["detail"] or "")[:160]) for r in results)
-        for (status, detail), n in common.most_common(5):
+        gh_annotation("error", f"No working pair among {len(results)}: {summary}. {TOKEN_HINT}",
+                      title="Classification failed")
+        failures = Counter((r["status"], str(r["detail"] or "")[:300]) for r in results)
+        for (status, detail), n in failures.most_common(5):
             print(f"  {n:4d} x {status}: {detail}", file=sys.stderr)
-        print(
-            "Check that HF_TOKEN is set, has the 'Make calls to Inference Providers' "
-            "permission, and that the account has inference credits left.",
-            file=sys.stderr,
-        )
+            gh_annotation("error", f"{n} x {status}: {detail}", title=f"Top failure: {status}")
+        print(f"Check that {TOKEN_HINT}", file=sys.stderr)
         sys.exit(1)
+
+    gh_annotation("notice", f"{len(results)} pairs: {summary}", title="Classification")
 
 
 if __name__ == "__main__":

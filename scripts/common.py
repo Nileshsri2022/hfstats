@@ -61,6 +61,26 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _escape_workflow_command(value, is_property: bool = False) -> str:
+    value = str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    if is_property:
+        value = value.replace(":", "%3A").replace(",", "%2C")
+    return value
+
+
+def gh_annotation(level: str, message: str, title: str = "") -> None:
+    """Emit a GitHub Actions annotation (``level``: notice, warning or error).
+
+    Annotations appear on the workflow run's summary page and in failure
+    notifications, so the reason a run failed is visible without digging
+    through logs. No-op outside GitHub Actions.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    props = f" title={_escape_workflow_command(title, is_property=True)}" if title else ""
+    print(f"::{level}{props}::{_escape_workflow_command(message)}", flush=True)
+
+
 def hub_headers() -> dict:
     """Headers for Hugging Face Hub API calls (authenticated when a token is set).
 

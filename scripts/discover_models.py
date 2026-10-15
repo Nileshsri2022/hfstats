@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import hub_headers, utc_now_iso, write_json
+from common import gh_annotation, hub_headers, utc_now_iso, write_json
 
 API_URL = "https://huggingface.co/api/models"
 MIN_DOWNLOADS = int(os.environ.get("MIN_DOWNLOADS", "10000"))
@@ -147,6 +147,10 @@ def extract_pairs(models):
         for info in mapping:
             if not isinstance(info, dict) or info.get("status") != "live":
                 continue
+            # We call the chat-completions endpoint, which only serves
+            # "conversational" mappings (absent task = accept, for safety).
+            if info.get("task", "conversational") != "conversational":
+                continue
             provider = info.get("provider")
             if not provider:
                 continue
@@ -164,7 +168,11 @@ def extract_pairs(models):
 
 def main():
     print("Discovering models from HF API...")
-    models = fetch_models()
+    try:
+        models = fetch_models()
+    except RuntimeError as e:
+        gh_annotation("error", str(e)[:1000], title="Model discovery failed")
+        raise
     pairs = extract_pairs(models)
 
     payload = {
@@ -178,7 +186,12 @@ def main():
     print(f"Wrote {len(models)} models, {len(pairs)} pairs to {OUT_PATH}")
     if not pairs:
         print("ERROR: discovery found no model:provider pairs.", file=sys.stderr)
+        gh_annotation("error", f"No model:provider pairs among {len(models)} models.",
+                      title="Model discovery failed")
         sys.exit(1)
+    providers = len({p["provider"] for p in pairs})
+    gh_annotation("notice", f"{len(models)} models, {len(pairs)} pairs across {providers} providers",
+                  title="Discovery")
 
 
 if __name__ == "__main__":

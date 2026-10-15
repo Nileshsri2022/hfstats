@@ -354,3 +354,19 @@ def test_main_exits_when_nothing_discovered(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         discover_models.main()
     assert exc.value.code == 1
+
+
+def test_extract_pairs_keeps_only_conversational_mappings():
+    models = [
+        {
+            "id": "org/m",
+            "downloads": 50000,
+            "inferenceProviderMapping": [
+                {"provider": "a", "status": "live", "task": "conversational"},
+                {"provider": "b", "status": "live", "task": "text-generation"},
+                {"provider": "c", "status": "live"},  # no task field: kept
+                {"provider": "d", "status": "error", "task": "conversational"},
+            ],
+        }
+    ]
+    assert [p["provider"] for p in discover_models.extract_pairs(models)] == ["a", "c"]

@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 import db_utils
-from common import load_json
+from common import gh_annotation, load_json
 
 CLASSIFIED_PATH = os.environ.get("CLASSIFIED_PATH", "scripts/classified.json")
 # 360 runs = ~90 days of history at the 6-hourly schedule.
@@ -113,6 +113,12 @@ def main():
     print(f"  Success: {success_count}/{total_pairs}")
     print(f"  Fastest: {fastest_pair} ({fastest_time}ms)")
     print(f"  DB: {db_utils.DB_PATH}")
+    gh_annotation(
+        "notice",
+        f"run {run_id}: {success_count}/{total_pairs} benchmarks succeeded; "
+        f"fastest {fastest_pair} ({fastest_time} ms)",
+        title="Results stored",
+    )
 
 
 if __name__ == "__main__":

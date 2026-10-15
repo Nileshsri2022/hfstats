@@ -1,8 +1,16 @@
 """Tests for scripts/classify_models.py."""
 import json
 
+import pytest
+
 import classify_models
+import common
 from conftest import FakeResponse, make_http_error
+
+
+@pytest.fixture(autouse=True)
+def _token(monkeypatch):
+    monkeypatch.setattr(common, "HF_TOKEN", "hf_test")
 
 
 def _patch_urlopen(monkeypatch, resp=None, exc=None):
@@ -266,3 +274,61 @@ def test_classify_all_preserves_order_and_serializes_each_provider(monkeypatch):
     infos = classify_models.classify_all(pairs)
     assert [i["detail"] for i in infos] == [p["model"] for p in pairs]
     assert overlaps == []  # never two in-flight requests to the same provider
+
+
+def test_main_fails_fast_without_token(monkeypatch, tmp_path, capsys):
+    # A missing secret used to mean ~400 requests that all fail with 401.
+    candidates = tmp_path / "candidates.json"
+    candidates.write_text(json.dumps({"pairs": [{"model": "m", "provider": "p"}]}))
+    monkeypatch.setattr(classify_models, "CANDIDATES_PATH", str(candidates))
+    monkeypatch.setattr(classify_models, "OUT_PATH", str(tmp_path / "classified.json"))
+    monkeypatch.setattr(common, "HF_TOKEN", "")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    def boom(*a, **k):
+        raise AssertionError("no request may be sent without a token")
+
+    monkeypatch.setattr(classify_models, "classify_pair", boom)
+    with pytest.raises(SystemExit) as exc:
+        classify_models.main()
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "HF_TOKEN is not set" in captured.err
+    assert "::error title=Missing HF_TOKEN::" in captured.out
+
+
+def test_main_failure_emits_github_annotations(monkeypatch, tmp_path, capsys):
+    candidates = tmp_path / "candidates.json"
+    candidates.write_text(
+        json.dumps({"pairs": [{"model": f"m{i}", "provider": "p"} for i in range(4)]})
+    )
+    monkeypatch.setattr(classify_models, "CANDIDATES_PATH", str(candidates))
+    monkeypatch.setattr(classify_models, "OUT_PATH", str(tmp_path / "classified.json"))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(
+        classify_models,
+        "classify_pair",
+        lambda model, provider: {"status": "auth_error", "detail": '{"error":"Invalid credentials"}'},
+    )
+    with pytest.raises(SystemExit):
+        classify_models.main()
+    out = capsys.readouterr().out
+    # The reason is visible on the run page, not only in the raw logs.
+    assert "::error title=Classification failed::No working pair among 4: 4 auth_error." in out
+    assert '::error title=Top failure%3A auth_error::4 x auth_error: {"error":"Invalid credentials"}' in out
+
+
+def test_main_success_emits_summary_notice(monkeypatch, tmp_path, capsys):
+    candidates = tmp_path / "candidates.json"
+    candidates.write_text(
+        json.dumps({"pairs": [{"model": "m1", "provider": "p"}, {"model": "m2", "provider": "q"}]})
+    )
+    monkeypatch.setattr(classify_models, "CANDIDATES_PATH", str(candidates))
+    monkeypatch.setattr(classify_models, "OUT_PATH", str(tmp_path / "classified.json"))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    statuses = {"m1": "working", "m2": "not_found"}
+    monkeypatch.setattr(
+        classify_models, "classify_pair", lambda model, provider: {"status": statuses[model], "detail": "d"}
+    )
+    classify_models.main()
+    assert "::notice title=Classification::2 pairs: 1 working, 1 not_found" in capsys.readouterr().out

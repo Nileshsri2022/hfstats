@@ -5,12 +5,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(__file__))
 from common import (
     build_chat_request,
     categorize_error_text,
     categorize_http_status,
+    gh_annotation,
     load_json,
     write_json,
 )
@@ -229,6 +231,24 @@ def main():
     write_json(OUT_PATH, payload)
 
     print(f"Wrote {len(results)} results to {OUT_PATH}")
+
+    ok = [r for r in results if r.get("success")]
+    if results:
+        ttfts = sorted(r["ttft"] for r in ok if r.get("ttft") is not None)
+        tps = sorted(r["throughput"] for r in ok if r.get("throughput") is not None)
+        msg = f"{len(ok)}/{len(results)} succeeded"
+        if ttfts:
+            msg += f"; median TTFT {ttfts[len(ttfts) // 2]} ms"
+        if tps:
+            msg += f"; median throughput {tps[len(tps) // 2]} tok/s"
+        gh_annotation("notice", msg, title=f"Benchmark {MODEL_GROUP}")
+        failed = Counter(r.get("error_category") or "fail" for r in results if not r.get("success"))
+        if failed:
+            gh_annotation(
+                "warning",
+                ", ".join(f"{n} {cat}" for cat, n in failed.most_common()),
+                title=f"Benchmark {MODEL_GROUP} failures",
+            )
 
 
 if __name__ == "__main__":
