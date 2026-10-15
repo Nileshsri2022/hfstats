@@ -3,6 +3,7 @@ name: Benchmark live test (temporary)
 # TEMPORARY one-off trigger used to validate the fixed pipeline end-to-end on
 # this branch while the scheduled workflow is disabled. Identical to
 # benchmark.yml except for this trigger; deleted right after the test run.
+# Attempt 2: re-run with failure annotations to surface the classify error.
 on:
   push:
     branches: [arena/ac3d4144-hfstats]
