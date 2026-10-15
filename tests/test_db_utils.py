@@ -166,3 +166,66 @@ def test_dump_db_to_json_returns_all_tables(temp_db):
     assert len(data["runs"]) == 1
     assert len(data["model_results"]) == 1
     assert data["model_results"][0]["model"] == "meta-llama/Llama-3"
+
+
+def test_insert_model_result_persists_throughput(temp_db):
+    # throughput was computed by the benchmark and shown by the dashboard but
+    # had no column, so it was silently dropped.
+    run_id = temp_db.insert_run("p", 1, 1, "m:p", 10, 1, 1, 0, 0, 0)
+    temp_db.insert_model_result(run_id, _sample_result(throughput=87.5))
+    conn = temp_db.get_conn()
+    try:
+        row = conn.execute("SELECT throughput FROM model_results").fetchone()
+    finally:
+        conn.close()
+    assert row["throughput"] == 87.5
+
+
+def test_init_db_migrates_old_schema_without_throughput(tmp_path, monkeypatch):
+    import db_utils
+
+    db_file = tmp_path / "old.db"
+    conn = sqlite3.connect(db_file)
+    conn.executescript(
+        """
+        CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+            prompt TEXT, success_count INTEGER, total_pairs INTEGER, fastest_pair TEXT,
+            fastest_time INTEGER, candidates_found INTEGER, pairs_working INTEGER,
+            pairs_loading INTEGER, pairs_rate_limited INTEGER, pairs_unsupported INTEGER);
+        CREATE TABLE model_results (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL,
+            model TEXT NOT NULL, provider TEXT NOT NULL, success INTEGER NOT NULL, error TEXT,
+            error_category TEXT, response_time INTEGER, ttft INTEGER, tokens_generated INTEGER,
+            total_tokens INTEGER, response TEXT);
+        INSERT INTO runs (timestamp) VALUES ('2026-01-01T00:00:00+00:00');
+        INSERT INTO model_results (run_id, model, provider, success) VALUES (1, 'old', 'p', 1);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(db_utils, "DB_PATH", str(db_file))
+    db_utils.init_db()
+    db_utils.init_db()  # idempotent
+
+    conn = db_utils.get_conn()
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(model_results)")}
+        old_row = conn.execute("SELECT model, throughput FROM model_results").fetchone()
+    finally:
+        conn.close()
+    assert "throughput" in cols
+    assert old_row["model"] == "old"
+    assert old_row["throughput"] is None
+
+
+def test_vacuum_returns_space_after_prune(temp_db):
+    import os
+
+    for _ in range(30):
+        rid = temp_db.insert_run("p", 0, 0, "", 0, 0, 0, 0, 0, 0)
+        temp_db.insert_model_result(rid, _sample_result(response="y" * 4000))
+    before = os.path.getsize(temp_db.DB_PATH)
+    temp_db.prune_old_runs(max_runs=1)
+    temp_db.vacuum()
+    after = os.path.getsize(temp_db.DB_PATH)
+    assert after < before

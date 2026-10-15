@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS model_results (
     tokens_generated INTEGER,
     total_tokens INTEGER,
     response TEXT,
+    throughput REAL,
     FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 
@@ -60,11 +61,33 @@ def get_conn():
     return conn
 
 
+# Columns added after the first release: (table, column, type). init_db adds
+# them to databases created with an older schema.
+_ADDED_COLUMNS = (("model_results", "throughput", "REAL"),)
+
+
 def init_db():
     conn = get_conn()
     try:
         conn.executescript(SCHEMA)
+        for table, column, col_type in _ADDED_COLUMNS:
+            existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
         conn.commit()
+    finally:
+        conn.close()
+
+
+def vacuum():
+    """Rebuild the DB file so space freed by pruning is returned.
+
+    SQLite never shrinks a file on DELETE; since every dashboard visitor
+    downloads history.db, keep it compact.
+    """
+    conn = get_conn()
+    try:
+        conn.execute("VACUUM")
     finally:
         conn.close()
 
@@ -136,8 +159,8 @@ def insert_model_result(run_id: int, result: dict):
             """
             INSERT INTO model_results
             (run_id, model, provider, success, error, error_category,
-             response_time, ttft, tokens_generated, total_tokens, response)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             response_time, ttft, tokens_generated, total_tokens, response, throughput)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -151,6 +174,7 @@ def insert_model_result(run_id: int, result: dict):
                 result.get("tokens_generated"),
                 result.get("total_tokens"),
                 result.get("response"),
+                result.get("throughput"),
             ),
         )
         conn.commit()

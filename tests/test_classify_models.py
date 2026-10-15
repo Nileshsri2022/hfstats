@@ -162,3 +162,107 @@ def test_main_retries_loading_then_rate_limited(monkeypatch, tmp_path):
     # After a loading retry and a rate_limited backoff, final status is working.
     assert data["pairs"][0]["status"] == "working"
     assert data["counts"]["working"] == 1
+
+
+def test_classify_calls_router_with_model_provider_in_body(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, *a, **k):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        seen["method"] = req.get_method()
+        return FakeResponse(json.dumps({"choices": [{}]}))
+
+    monkeypatch.setattr(classify_models.urllib.request, "urlopen", fake_urlopen)
+    assert classify_models.classify_pair("org/model", "novita")["status"] == "working"
+    # Regression: the retired api-inference host answered everything with 410.
+    assert seen["url"] == "https://router.huggingface.co/v1/chat/completions"
+    assert "api-inference" not in seen["url"]
+    assert seen["method"] == "POST"
+    assert seen["body"]["model"] == "org/model:novita"
+    assert seen["body"]["max_tokens"] == classify_models.TINY_MAX_TOKENS
+    assert "stream" not in seen["body"]
+
+
+def test_classify_auth_and_gone_statuses(monkeypatch):
+    cases = {401: "auth_error", 403: "auth_error", 410: "not_found", 422: "unsupported"}
+    for code, expected in cases.items():
+        _patch_urlopen(monkeypatch, exc=make_http_error(code, "body"))
+        assert classify_models.classify_pair("m", "p")["status"] == expected
+
+
+def test_classify_error_object_auth(monkeypatch):
+    _patch_urlopen(
+        monkeypatch, FakeResponse(json.dumps({"error": "Invalid credentials in Authorization header"}))
+    )
+    assert classify_models.classify_pair("m", "p")["status"] == "auth_error"
+
+
+def test_classify_read_timeout_is_cold_start(monkeypatch):
+    # Timeouts while waiting for the response are raised as TimeoutError (not
+    # URLError) and used to be misfiled as provider_bug.
+    _patch_urlopen(monkeypatch, exc=TimeoutError("timed out"))
+    assert classify_models.classify_pair("m", "p")["status"] == "cold_start"
+
+
+def test_main_fails_loudly_when_no_pair_works(monkeypatch, tmp_path, capsys):
+    import pytest
+
+    candidates = tmp_path / "candidates.json"
+    out = tmp_path / "classified.json"
+    candidates.write_text(
+        json.dumps({"pairs": [{"model": f"m{i}", "provider": "p"} for i in range(3)]})
+    )
+    monkeypatch.setattr(classify_models, "CANDIDATES_PATH", str(candidates))
+    monkeypatch.setattr(classify_models, "OUT_PATH", str(out))
+    monkeypatch.setattr(
+        classify_models,
+        "classify_pair",
+        lambda model, provider: {"status": "not_found", "detail": "gone for good"},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        classify_models.main()
+    assert exc.value.code == 1
+    # The classification is still written (useful for debugging) ...
+    assert json.loads(out.read_text())["counts"]["not_found"] == 3
+    # ... and the most common failure is printed.
+    assert "3 x not_found: gone for good" in capsys.readouterr().err
+
+
+def test_main_exits_when_no_candidates(monkeypatch, tmp_path):
+    import pytest
+
+    candidates = tmp_path / "candidates.json"
+    candidates.write_text(json.dumps({"pairs": []}))
+    monkeypatch.setattr(classify_models, "CANDIDATES_PATH", str(candidates))
+    monkeypatch.setattr(classify_models, "OUT_PATH", str(tmp_path / "classified.json"))
+    with pytest.raises(SystemExit) as exc:
+        classify_models.main()
+    assert exc.value.code == 1
+
+
+def test_classify_all_preserves_order_and_serializes_each_provider(monkeypatch):
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(classify_models, "CONCURRENCY", 4)
+    pairs = [{"model": f"m{i}", "provider": f"p{i % 3}"} for i in range(12)]
+    active = {}
+    lock = threading.Lock()
+    overlaps = []
+
+    def fake_classify(model, provider):
+        with lock:
+            active[provider] = active.get(provider, 0) + 1
+            if active[provider] > 1:
+                overlaps.append(provider)
+        _time.sleep(0.01)
+        with lock:
+            active[provider] -= 1
+        return {"status": "working", "detail": model}
+
+    monkeypatch.setattr(classify_models, "classify_pair", fake_classify)
+    infos = classify_models.classify_all(pairs)
+    assert [i["detail"] for i in infos] == [p["model"] for p in pairs]
+    assert overlaps == []  # never two in-flight requests to the same provider

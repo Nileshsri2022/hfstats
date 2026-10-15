@@ -156,3 +156,143 @@ def test_main_splits_groups_and_writes(monkeypatch, tmp_path):
     # 6 working pairs, round-robin into 3 groups -> group1 gets 2.
     assert len(data["results"]) == 2
     assert "skip" not in {r["model"] for r in data["results"]}
+
+
+class _ClockedStream:
+    """Streams SSE lines while advancing a fake clock to each line's timestamp."""
+
+    def __init__(self, clock, timeline):
+        self.clock = clock
+        self.timeline = timeline
+        self.headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        for t, line in self.timeline:
+            self.clock["now"] = t
+            yield line.encode("utf-8")
+
+
+def _run_clocked(monkeypatch, timeline):
+    clock = {"now": 0.0}
+    monkeypatch.setattr(benchmark_models.time, "perf_counter", lambda: clock["now"])
+    _patch_urlopen(monkeypatch, _ClockedStream(clock, timeline))
+    return benchmark_models.benchmark_pair("m", "p")
+
+
+def test_benchmark_request_targets_router_with_streaming_usage(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, *a, **k):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse(lines=[_sse({"choices": [{"delta": {"content": "x"}}]}), "data: [DONE]\n"])
+
+    monkeypatch.setattr(benchmark_models.urllib.request, "urlopen", fake_urlopen)
+    benchmark_models.benchmark_pair("org/model", "groq")
+    assert seen["url"] == "https://router.huggingface.co/v1/chat/completions"
+    assert seen["body"]["model"] == "org/model:groq"
+    assert seen["body"]["stream"] is True
+    assert seen["body"]["stream_options"] == {"include_usage": True}
+    assert seen["body"]["max_tokens"] == benchmark_models.MAX_TOKENS
+
+
+def test_ttft_is_measured_at_first_token_not_at_headers(monkeypatch):
+    r = _run_clocked(
+        monkeypatch,
+        [
+            (0.4, _sse({"choices": [{"delta": {"role": "assistant", "content": ""}}]})),
+            (1.0, _sse({"choices": [{"delta": {"content": "Hello"}}]})),
+            (1.5, _sse({"choices": [{"delta": {"content": " big"}}]})),
+            (2.0, _sse({"choices": [{"delta": {"content": " world"}}]})),
+            (2.0, _sse({"choices": [], "usage": {"completion_tokens": 7, "total_tokens": 20}})),
+            (2.0, "data: [DONE]\n"),
+        ],
+    )
+    assert r["success"] is True
+    assert r["ttft"] == 1000            # first content token, not the role-only chunk
+    assert r["response_time"] == 2000
+    assert r["tokens_generated"] == 7    # provider usage preferred over chunk count
+    assert r["total_tokens"] == 20
+    assert r["throughput"] == 6.0        # (7 - 1) tokens / 1.0 s after first token
+    assert r["response"] == "Hello big world"
+
+
+def test_reasoning_tokens_count_as_generated(monkeypatch):
+    r = _run_clocked(
+        monkeypatch,
+        [
+            (0.5, _sse({"choices": [{"delta": {"reasoning_content": "Let me think"}}]})),
+            (1.0, _sse({"choices": [{"delta": {"reasoning": " about it"}}]})),
+            (1.0, "data: [DONE]\n"),
+        ],
+    )
+    # Reasoning models that spend the token budget thinking used to be
+    # reported as "No tokens generated" failures.
+    assert r["success"] is True
+    assert r["ttft"] == 500
+    assert r["tokens_generated"] == 2
+    assert r["response"].startswith("[reasoning] Let me think")
+
+
+def test_data_lines_without_space_are_parsed(monkeypatch):
+    lines = ['data:{"choices":[{"delta":{"content":"X"}}]}\n', "data:[DONE]\n"]
+    _patch_urlopen(monkeypatch, FakeResponse(lines=lines))
+    r = benchmark_models.benchmark_pair("m", "p")
+    assert r["success"] is True
+    assert r["response"] == "X"
+
+
+def test_error_inside_stream_is_a_failure(monkeypatch):
+    lines = [_sse({"error": {"message": "Rate limit reached for model"}}), "data: [DONE]\n"]
+    _patch_urlopen(monkeypatch, FakeResponse(lines=lines))
+    r = benchmark_models.benchmark_pair("m", "p")
+    assert r["success"] is False
+    assert r["error_category"] == "rate_limited"
+    assert r["throughput"] is None
+
+
+def test_benchmark_read_timeout_is_cold_start(monkeypatch):
+    _patch_urlopen(monkeypatch, exc=TimeoutError("timed out"))
+    r = benchmark_models.benchmark_pair("m", "p")
+    assert r["success"] is False
+    assert r["error_category"] == "cold_start"
+
+
+def test_benchmark_auth_error_mapping(monkeypatch):
+    _patch_urlopen(monkeypatch, exc=make_http_error(401, "Invalid credentials"))
+    r = benchmark_models.benchmark_pair("m", "p")
+    assert r["error_category"] == "auth_error"
+
+
+def test_stored_response_is_truncated_to_preview(monkeypatch):
+    long_text = "x" * 5000
+    lines = [_sse({"choices": [{"delta": {"content": long_text}}]}), "data: [DONE]\n"]
+    _patch_urlopen(monkeypatch, FakeResponse(lines=lines))
+    r = benchmark_models.benchmark_pair("m", "p")
+    assert len(r["response"]) == benchmark_models.RESPONSE_PREVIEW_CHARS
+
+
+def test_main_handles_missing_downloads(monkeypatch, tmp_path):
+    classified = tmp_path / "classified.json"
+    out = tmp_path / "results.json"
+    pairs = [
+        {"model": "a", "provider": "p", "status": "working", "downloads": None},
+        {"model": "b", "provider": "p", "status": "working", "downloads": 10},
+    ]
+    classified.write_text(json.dumps({"timestamp": "t", "pairs": pairs}))
+    monkeypatch.setattr(benchmark_models, "CLASSIFIED_PATH", str(classified))
+    monkeypatch.setattr(benchmark_models, "OUT_PATH", str(out))
+    monkeypatch.setattr(benchmark_models, "MODEL_GROUP", "group1")
+    monkeypatch.setattr(
+        benchmark_models,
+        "benchmark_pair",
+        lambda model, provider: {"model": model, "provider": provider, "success": True},
+    )
+    benchmark_models.main()  # used to raise TypeError comparing None and int
+    assert json.loads(out.read_text())["results"][0]["model"] == "b"

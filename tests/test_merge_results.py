@@ -39,7 +39,7 @@ def test_main_merges_results_into_db(tmp_path, monkeypatch):
         {
             "prompt": "explain",
             "results": [
-                {"model": "m1", "provider": "p", "success": True, "response_time": 300},
+                {"model": "m1", "provider": "p", "success": True, "response_time": 300, "throughput": 55.5},
                 {"model": "m2", "provider": "p", "success": False, "response_time": 100},
             ],
         },
@@ -65,6 +65,7 @@ def test_main_merges_results_into_db(tmp_path, monkeypatch):
         run = conn.execute("SELECT * FROM runs").fetchone()
         mr = conn.execute("SELECT COUNT(*) AS c FROM model_results").fetchone()["c"]
         ds = conn.execute("SELECT COUNT(*) AS c FROM discovery_snapshots").fetchone()["c"]
+        tp = conn.execute("SELECT throughput FROM model_results WHERE model='m1'").fetchone()["throughput"]
     finally:
         conn.close()
 
@@ -80,6 +81,7 @@ def test_main_merges_results_into_db(tmp_path, monkeypatch):
     assert run["pairs_unsupported"] == 1
     assert mr == 3
     assert ds == 2
+    assert tp == 55.5
 
 
 def test_main_exits_when_classified_missing(tmp_path, monkeypatch):
@@ -117,3 +119,13 @@ def test_main_handles_no_successful_results(tmp_path, monkeypatch):
     assert run["fastest_pair"] == ""
     # fastest_time None coalesced to 0 on insert.
     assert run["fastest_time"] == 0
+
+
+def test_main_refuses_to_record_empty_run(tmp_path, monkeypatch):
+    import db_utils
+
+    monkeypatch.setattr(db_utils, "DB_PATH", str(tmp_path / "h.db"))
+    _write_inputs(tmp_path, monkeypatch, [{"results": []}], {"counts": {}, "pairs": []})
+    with pytest.raises(SystemExit) as exc:
+        merge_results.main()
+    assert exc.value.code == 1

@@ -7,6 +7,8 @@ import db_utils
 from common import load_json
 
 CLASSIFIED_PATH = os.environ.get("CLASSIFIED_PATH", "scripts/classified.json")
+# 360 runs = ~90 days of history at the 6-hourly schedule.
+MAX_RUNS = int(os.environ.get("MAX_RUNS", "360"))
 GROUP_PATHS = [
     os.environ.get("RESULTS_GROUP1", "scripts/results-group1.json"),
     os.environ.get("RESULTS_GROUP2", "scripts/results-group2.json"),
@@ -104,7 +106,8 @@ def main():
             },
         )
 
-    db_utils.prune_old_runs(max_runs=360)
+    db_utils.prune_old_runs(max_runs=MAX_RUNS)
+    db_utils.vacuum()
 
     print(f"Merged {total_pairs} results into run_id={run_id}")
     print(f"  Success: {success_count}/{total_pairs}")

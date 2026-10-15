@@ -9,6 +9,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(__file__))
 from common import (
     build_chat_request,
+    categorize_error_text,
     categorize_http_status,
     load_json,
     write_json,
@@ -24,70 +25,126 @@ PROMPT = (
 )
 MAX_TOKENS = 500
 REQUEST_TIMEOUT = 120
+# Only a preview of each answer is stored: full answers were never displayed
+# but would have grown history.db (downloaded by every dashboard visitor) by
+# ~45 MB over the retention window.
+RESPONSE_PREVIEW_CHARS = 300
+GROUPS = ("group1", "group2", "group3")
+
+
+def _delta_parts(choice) -> tuple:
+    """Return ``(content, reasoning)`` text from a streamed choice delta.
+
+    Reasoning models (DeepSeek-R1, gpt-oss, Qwen3, ...) stream their thinking
+    as ``reasoning_content``/``reasoning`` before any ``content``; those are
+    generated tokens too and must count toward TTFT and throughput.
+    """
+    delta = choice.get("delta") if isinstance(choice, dict) else None
+    if not isinstance(delta, dict):
+        return "", ""
+    content = delta.get("content")
+    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+    return (
+        content if isinstance(content, str) else "",
+        reasoning if isinstance(reasoning, str) else "",
+    )
 
 
 def benchmark_pair(model: str, provider: str) -> dict:
     req = build_chat_request(model, provider, PROMPT, MAX_TOKENS, stream=True)
 
     start = time.perf_counter()
-    ttft = None
-    tokens_generated = 0
+    first_token_at = None
+    token_chunks = 0
+    completion_tokens = None
     total_tokens = None
-    response_chunks = []
-    error = None
-    error_category = None
+    content_parts = []
+    reasoning_parts = []
+    stream_error = None
+
+    def failure(error, category, response_time):
+        return {
+            "model": model,
+            "provider": provider,
+            "success": False,
+            "error": error,
+            "error_category": category,
+            "response_time": response_time,
+            "ttft": int((first_token_at - start) * 1000) if first_token_at else None,
+            "tokens_generated": completion_tokens or token_chunks,
+            "total_tokens": total_tokens,
+            "throughput": None,
+            "response": "",
+        }
 
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            first_byte = time.perf_counter()
-            ttft = int((first_byte - start) * 1000)
-
-            for line in resp:
-                line = line.decode("utf-8", errors="replace")
-                if not line.startswith("data: "):
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace")
+                if not line.startswith("data:"):
                     continue
-                data_str = line[len("data: "):].strip()
+                data_str = line[len("data:"):].strip()
                 if data_str == "[DONE]":
                     break
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(chunk, dict):
+                    continue
 
-                # Collect choices
-                choices = chunk.get("choices", [])
-                for c in choices:
-                    delta = c.get("delta", {})
-                    content = delta.get("content", "")
+                # Some providers report errors inside a 200 OK stream.
+                if chunk.get("error"):
+                    stream_error = str(chunk["error"])[:500]
+                    break
+
+                got_token = False
+                for c in chunk.get("choices") or []:
+                    content, reasoning = _delta_parts(c)
                     if content:
-                        response_chunks.append(content)
-                        tokens_generated += 1
+                        content_parts.append(content)
+                        got_token = True
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                        got_token = True
+                if got_token:
+                    token_chunks += 1
+                    if first_token_at is None:
+                        # TTFT = time until the first generated token, not until
+                        # the HTTP headers arrive (which is almost immediate).
+                        first_token_at = time.perf_counter()
 
-                # Usage may appear in the last chunk
+                # Usage arrives in the final chunk (requested via stream_options).
                 usage = chunk.get("usage")
-                if usage and isinstance(usage, dict):
-                    total_tokens = usage.get("total_tokens")
+                if isinstance(usage, dict):
+                    completion_tokens = usage.get("completion_tokens") or completion_tokens
+                    total_tokens = usage.get("total_tokens") or total_tokens
 
         end = time.perf_counter()
         response_time = int((end - start) * 1000)
-        response_text = "".join(response_chunks)
 
-        if tokens_generated == 0:
-            return {
-                "model": model,
-                "provider": provider,
-                "success": False,
-                "error": "No tokens generated",
-                "error_category": "provider_bug",
-                "response_time": response_time,
-                "ttft": ttft,
-                "tokens_generated": 0,
-                "total_tokens": total_tokens,
-                "response": response_text,
-            }
+        if stream_error:
+            return failure(stream_error, categorize_error_text(stream_error), response_time)
+        if token_chunks == 0:
+            return failure("No tokens generated", "provider_bug", response_time)
 
+        # Prefer the provider's real token count; chunk counts undercount when a
+        # provider packs several tokens into one chunk.
+        tokens_generated = completion_tokens or token_chunks
         total_tokens = total_tokens or tokens_generated
-        throughput = round(tokens_generated / (response_time / 1000), 2) if response_time > 0 else 0
+
+        # Output speed: tokens after the first one / time after the first token.
+        gen_seconds = end - first_token_at
+        if tokens_generated > 1 and gen_seconds > 0:
+            throughput = round((tokens_generated - 1) / gen_seconds, 2)
+        elif end - start > 0:
+            throughput = round(tokens_generated / (end - start), 2)
+        else:
+            throughput = 0
+
+        response_text = "".join(content_parts)
+        if not response_text and reasoning_parts:
+            response_text = "[reasoning] " + "".join(reasoning_parts)
 
         return {
             "model": model,
@@ -96,65 +153,33 @@ def benchmark_pair(model: str, provider: str) -> dict:
             "error": None,
             "error_category": "working",
             "response_time": response_time,
-            "ttft": ttft,
+            "ttft": int((first_token_at - start) * 1000),
             "tokens_generated": tokens_generated,
             "total_tokens": total_tokens,
             "throughput": throughput,
-            "response": response_text,
+            "response": response_text[:RESPONSE_PREVIEW_CHARS],
         }
 
     except urllib.error.HTTPError as e:
-        end = time.perf_counter()
-        response_time = int((end - start) * 1000)
+        response_time = int((time.perf_counter() - start) * 1000)
         body = e.read().decode("utf-8", errors="replace")[:500]
-        status = e.code
-        error_category = categorize_http_status(status)
-        return {
-            "model": model,
-            "provider": provider,
-            "success": False,
-            "error": f"HTTP {status}: {body}",
-            "error_category": error_category,
-            "response_time": response_time,
-            "ttft": ttft,
-            "tokens_generated": tokens_generated,
-            "total_tokens": total_tokens,
-            "response": "",
-        }
+        return failure(f"HTTP {e.code}: {body}", categorize_http_status(e.code), response_time)
 
     except urllib.error.URLError as e:
-        end = time.perf_counter()
-        response_time = int((end - start) * 1000)
+        response_time = int((time.perf_counter() - start) * 1000)
         reason = str(e.reason).lower()
-        error_category = "cold_start" if "timeout" in reason else "provider_bug"
-        return {
-            "model": model,
-            "provider": provider,
-            "success": False,
-            "error": reason,
-            "error_category": error_category,
-            "response_time": response_time,
-            "ttft": ttft,
-            "tokens_generated": tokens_generated,
-            "total_tokens": total_tokens,
-            "response": "",
-        }
+        category = "cold_start" if ("timeout" in reason or "timed out" in reason) else "provider_bug"
+        return failure(reason, category, response_time)
+
+    except TimeoutError:
+        # Read timeouts while waiting for headers or mid-stream are raised as
+        # TimeoutError, not URLError.
+        response_time = int((time.perf_counter() - start) * 1000)
+        return failure(f"timed out after {REQUEST_TIMEOUT}s", "cold_start", response_time)
 
     except Exception as e:
-        end = time.perf_counter()
-        response_time = int((end - start) * 1000)
-        return {
-            "model": model,
-            "provider": provider,
-            "success": False,
-            "error": str(e),
-            "error_category": "provider_bug",
-            "response_time": response_time,
-            "ttft": ttft,
-            "tokens_generated": tokens_generated,
-            "total_tokens": total_tokens,
-            "response": "",
-        }
+        response_time = int((time.perf_counter() - start) * 1000)
+        return failure(str(e), "provider_bug", response_time)
 
 
 def main():
@@ -162,13 +187,13 @@ def main():
     classified = load_json(CLASSIFIED_PATH) or {}
 
     working = [p for p in classified.get("pairs", []) if p.get("status") == "working"]
-    working.sort(key=lambda x: x.get("downloads", 0), reverse=True)
+    working.sort(key=lambda x: x.get("downloads") or 0, reverse=True)
     capped = working[:MAX_BENCHMARK_PAIRS]
 
-    # Split into 3 groups
-    groups = {"group1": [], "group2": [], "group3": []}
+    # Split into 3 groups (round-robin so every group gets popular pairs)
+    groups = {g: [] for g in GROUPS}
     for i, p in enumerate(capped):
-        groups[["group1", "group2", "group3"][i % 3]].append(p)
+        groups[GROUPS[i % len(GROUPS)]].append(p)
 
     if MODEL_GROUP not in groups:
         print(
@@ -188,7 +213,10 @@ def main():
         print(f"[{i+1}/{len(my_pairs)}] Benchmarking {model}:{provider} ...")
         r = benchmark_pair(model, provider)
         status = "OK" if r["success"] else r.get("error_category", "fail")
-        print(f"  -> {status} time={r.get('response_time')}ms ttft={r.get('ttft')}ms tok={r.get('tokens_generated')}")
+        print(
+            f"  -> {status} time={r.get('response_time')}ms ttft={r.get('ttft')}ms "
+            f"tok={r.get('tokens_generated')} tok/s={r.get('throughput')}"
+        )
         results.append(r)
 
     payload = {

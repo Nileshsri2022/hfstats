@@ -2,13 +2,17 @@
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
 from common import (
     build_chat_request,
+    categorize_error_text,
     categorize_http_status,
     load_json,
     utc_now_iso,
@@ -22,41 +26,45 @@ TINY_MAX_TOKENS = 5
 REQUEST_TIMEOUT = 25
 RETRY_DELAY = 5
 BACKOFF_DELAY = 10
+# Providers are classified in parallel, but each provider only ever sees one
+# request at a time from us, so we never trip provider-side concurrency limits.
+CONCURRENCY = max(1, int(os.environ.get("CLASSIFY_CONCURRENCY", "6")))
+STATUSES = (
+    "working",
+    "loading",
+    "overloaded",
+    "rate_limited",
+    "quota_exceeded",
+    "cold_start",
+    "auth_error",
+    "provider_bug",
+    "not_found",
+    "unsupported",
+)
 
 
 def classify_pair(model: str, provider: str) -> dict:
-    req = build_chat_request(
-        model, provider, PROMPT, TINY_MAX_TOKENS, provider_in_url=True
-    )
+    req = build_chat_request(model, provider, PROMPT, TINY_MAX_TOKENS)
 
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            # Check for JSON array which is valid HF chat-completion streaming response
-            # but for non-streaming we should get a JSON object
-            try:
-                data = json.loads(body)
-            except json.JSONDecodeError:
-                return {"status": "provider_bug", "detail": "malformed json"}
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return {"status": "provider_bug", "detail": "malformed json"}
 
-            # If it's an error object from provider
-            if isinstance(data, dict) and data.get("error"):
-                err = str(data["error"]).lower()
-                if "rate limit" in err or "too many requests" in err:
-                    return {"status": "rate_limited", "detail": err}
-                if "quota" in err or "insufficient" in err:
-                    return {"status": "quota_exceeded", "detail": err}
-                if "not found" in err or "unknown" in err:
-                    return {"status": "not_found", "detail": err}
-                return {"status": "provider_bug", "detail": err}
+        # Error object returned with a 2xx status
+        if isinstance(data, dict) and data.get("error"):
+            err = str(data["error"]).lower()
+            return {"status": categorize_error_text(err), "detail": err[:200]}
 
-            if isinstance(data, dict) and "choices" in data:
-                return {"status": "working", "detail": "ok"}
-            if isinstance(data, list) and len(data) > 0:
-                # Could be streaming chunks aggregated somehow
-                return {"status": "working", "detail": "list_response"}
+        if isinstance(data, dict) and "choices" in data:
+            return {"status": "working", "detail": "ok"}
+        if isinstance(data, list) and len(data) > 0:
+            return {"status": "working", "detail": "list_response"}
 
-            return {"status": "provider_bug", "detail": "unexpected structure"}
+        return {"status": "provider_bug", "detail": "unexpected structure"}
 
     except urllib.error.HTTPError as e:
         status = e.code
@@ -73,8 +81,54 @@ def classify_pair(model: str, provider: str) -> dict:
             return {"status": "cold_start", "detail": reason}
         return {"status": "provider_bug", "detail": reason}
 
+    except TimeoutError:
+        # Slow responses time out while waiting for headers/body; urllib does
+        # not wrap these in URLError.
+        return {"status": "cold_start", "detail": f"timed out after {REQUEST_TIMEOUT}s"}
+
     except Exception as e:
         return {"status": "provider_bug", "detail": str(e)}
+
+
+def classify_with_retries(model: str, provider: str) -> dict:
+    info = classify_pair(model, provider)
+    # Retry loading once
+    if info["status"] == "loading":
+        time.sleep(RETRY_DELAY)
+        info = classify_pair(model, provider)
+    # Backoff for rate limited
+    if info["status"] == "rate_limited":
+        time.sleep(BACKOFF_DELAY)
+        info = classify_pair(model, provider)
+    return info
+
+
+def classify_all(pairs: list) -> list:
+    """Classify every pair; returns infos in the same order as ``pairs``."""
+    infos = [None] * len(pairs)
+    queues = {}
+    for idx, p in enumerate(pairs):
+        queues.setdefault(p["provider"], []).append(idx)
+
+    lock = threading.Lock()
+    done = [0]
+
+    def run_queue(indices):
+        for idx in indices:
+            p = pairs[idx]
+            info = classify_with_retries(p["model"], p["provider"])
+            infos[idx] = info
+            with lock:
+                done[0] += 1
+                n = done[0]
+            print(f"[{n}/{len(pairs)}] {p['model']}:{p['provider']} -> {info['status']}", flush=True)
+
+    # Longest queues first so the slowest provider starts immediately.
+    ordered = sorted(queues.values(), key=len, reverse=True)
+    workers = max(1, min(CONCURRENCY, len(ordered)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(run_queue, ordered))
+    return infos
 
 
 def main():
@@ -82,47 +136,23 @@ def main():
     candidates = load_json(CANDIDATES_PATH) or {}
 
     pairs = candidates.get("pairs", [])
+    if not pairs:
+        print(f"ERROR: no candidate pairs in {CANDIDATES_PATH}; nothing to classify.", file=sys.stderr)
+        sys.exit(1)
+
+    providers = {p["provider"] for p in pairs}
+    print(f"Classifying {len(pairs)} pairs across {len(providers)} providers (concurrency={CONCURRENCY})...")
+    infos = classify_all(pairs)
+
     results = []
-    counts = {
-        "working": 0,
-        "loading": 0,
-        "overloaded": 0,
-        "rate_limited": 0,
-        "quota_exceeded": 0,
-        "cold_start": 0,
-        "provider_bug": 0,
-        "not_found": 0,
-        "unsupported": 0,
-    }
-
-    for i, p in enumerate(pairs):
-        model = p["model"]
-        provider = p["provider"]
-        print(f"[{i+1}/{len(pairs)}] Classifying {model}:{provider} ...", end=" ")
-        info = classify_pair(model, provider)
+    counts = {status: 0 for status in STATUSES}
+    for p, info in zip(pairs, infos):
         status = info["status"]
-
-        # Retry loading once
-        if status == "loading":
-            print(f"{status} → retrying in {RETRY_DELAY}s...", end=" ")
-            time.sleep(RETRY_DELAY)
-            info = classify_pair(model, provider)
-            status = info["status"]
-
-        # Backoff for rate limited
-        if status == "rate_limited":
-            print(f"{status} → backing off {BACKOFF_DELAY}s...", end=" ")
-            time.sleep(BACKOFF_DELAY)
-            info = classify_pair(model, provider)
-            status = info["status"]
-
         counts[status] = counts.get(status, 0) + 1
-        print(status)
-
         results.append(
             {
-                "model": model,
-                "provider": provider,
+                "model": p["model"],
+                "provider": p["provider"],
                 "provider_id": p.get("provider_id"),
                 "downloads": p.get("downloads"),
                 "likes": p.get("likes"),
@@ -144,6 +174,21 @@ def main():
     for k, v in counts.items():
         if v:
             print(f"  {k}: {v}")
+
+    if counts["working"] == 0:
+        # Every pair failing at once is (almost) never the providers' fault: it
+        # means a broken endpoint, a bad token or exhausted credits. Fail the
+        # workflow instead of quietly recording another empty run.
+        print("ERROR: no pair is working. Most common failures:", file=sys.stderr)
+        common = Counter((r["status"], str(r["detail"] or "")[:160]) for r in results)
+        for (status, detail), n in common.most_common(5):
+            print(f"  {n:4d} x {status}: {detail}", file=sys.stderr)
+        print(
+            "Check that HF_TOKEN is set, has the 'Make calls to Inference Providers' "
+            "permission, and that the account has inference credits left.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
