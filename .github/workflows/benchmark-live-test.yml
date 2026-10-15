@@ -1,0 +1,110 @@
+name: Benchmark live test (temporary)
+
+# TEMPORARY one-off trigger used to validate the fixed pipeline end-to-end on
+# this branch while the scheduled workflow is disabled. Identical to
+# benchmark.yml except for this trigger; deleted right after the test run.
+on:
+  push:
+    branches: [arena/ac3d4144-hfstats]
+    paths: ['.github/workflows/benchmark-live-test.yml']
+
+# Never run two benchmarks at once: both would try to commit history.db.
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Authenticated Hub calls get a far larger rate-limit budget than
+      # anonymous calls from shared runner IPs; inference always needs it.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Discover models
+        run: python3 scripts/discover_models.py
+      - name: Classify pairs
+        run: python3 scripts/classify_models.py
+      - uses: actions/upload-artifact@v4
+        if: always()  # keep the classification for debugging even if it failed
+        with:
+          name: classified
+          path: |
+            scripts/candidates.json
+            scripts/classified.json
+          if-no-files-found: warn
+
+  benchmark:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [group1, group2, group3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: classified
+          path: scripts/
+      - name: Benchmark ${{ matrix.group }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MODEL_GROUP: ${{ matrix.group }}
+        run: python3 scripts/benchmark_models.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.group }}
+          path: scripts/results.json
+
+  merge_and_update:
+    needs: benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          path: scripts/
+      - name: Merge results
+        # No `|| true`: a missing artifact must fail the run, not be silently
+        # skipped.
+        run: |
+          mv scripts/classified/classified.json scripts/classified.json
+          for g in group1 group2 group3; do
+            mv "scripts/results-$g/results.json" "scripts/results-$g.json"
+          done
+          python3 scripts/merge_results.py
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add history.db
+          if git diff --cached --quiet; then
+            echo "history.db unchanged"
+            exit 0
+          fi
+          git commit -m "Update benchmark results [skip ci]"
+          # Another commit may have landed on the branch while we were running.
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
