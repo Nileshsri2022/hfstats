@@ -147,6 +147,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .status-quota_exceeded { background: rgba(239,68,68,0.12); color: var(--danger); }
 .status-not_found { background: rgba(107,114,128,0.12); color: #9CA3AF; }
 .status-unsupported { background: rgba(107,114,128,0.12); color: #9CA3AF; }
+.status-auth_error { background: rgba(168,85,247,0.12); color: #A855F7; }
 
 /* Sparkline canvas */
 .sparkline { vertical-align: middle; }
@@ -228,7 +229,47 @@ const PROVIDER_META = {
   'hf-inference':   { name: 'HF Native',   color: '#FFD21E' },
   'replicate':      { name: 'Replicate',   color: '#2563EB' },
   'fal-ai':         { name: 'Fal',         color: '#7C3AED' },
+  'deepinfra':      { name: 'DeepInfra',   color: '#22D3EE' },
+  'nscale':         { name: 'Nscale',      color: '#F472B6' },
+  'scaleway':       { name: 'Scaleway',    color: '#8B5CF6' },
+  'ovhcloud':       { name: 'OVHcloud',    color: '#3B82F6' },
+  'cohere':         { name: 'Cohere',      color: '#FB923C' },
+  'publicai':       { name: 'PublicAI',    color: '#2DD4BF' },
+  'zai-org':        { name: 'Z.ai',        color: '#A3E635' },
+  'baseten':        { name: 'Baseten',     color: '#FACC15' },
+  'nebius':         { name: 'Nebius',      color: '#60A5FA' },
 };
+
+/* Chart.js paints on <canvas>, which cannot resolve CSS custom properties such
+   as 'var(--accent)' (they silently fall back to black). Resolve the theme once
+   and hand real colour values to charts and SVG sparklines. */
+const ROOT_STYLE = getComputedStyle(document.documentElement);
+const cssVar = name => ROOT_STYLE.getPropertyValue(name).trim();
+const COLORS = {
+  accent: cssVar('--accent'), blue: cssVar('--blue'), teal: cssVar('--teal'),
+  text: cssVar('--text'), textDim: cssVar('--text-dim'),
+  success: cssVar('--success'), danger: cssVar('--danger'), warning: cssVar('--warning'),
+  grid: 'rgba(255,255,255,0.04)',
+};
+const STATUS_COLORS = {
+  working: COLORS.success, loading: COLORS.warning, overloaded: '#F97316',
+  rate_limited: '#9CA3AF', cold_start: COLORS.blue, provider_bug: COLORS.danger,
+  quota_exceeded: '#FB7185', not_found: '#6B7280', unsupported: '#4B5563',
+  auth_error: '#A855F7',
+};
+function statusColor(s) { return STATUS_COLORS[s] || '#9CA3AF'; }
+function healthColor(pct, good, ok) {
+  return pct >= good ? COLORS.success : pct >= ok ? COLORS.warning : COLORS.danger;
+}
+const AXES = {
+  x: { ticks: { color: COLORS.textDim }, grid: { color: COLORS.grid } },
+  y: { ticks: { color: COLORS.textDim }, grid: { color: COLORS.grid } },
+};
+const LEGEND = { labels: { color: COLORS.text } };
+if (window.Chart) {
+  Chart.defaults.color = COLORS.textDim;
+  Chart.defaults.borderColor = 'rgba(255,255,255,0.06)';
+}
 function providerChip(provider) {
   const m = PROVIDER_META[provider] || { name: provider, color: '#9CA3AF' };
   return `<span class="provider-chip" style="background:${m.color}22;color:${m.color}">${escapeHtml(m.name)}</span>`;
@@ -257,7 +298,8 @@ let pairs = new Set();
 
 async function loadDb() {
   const SQL = await initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${f}` });
-  const buf = await fetch('history.db').then(r => {
+  // no-cache: revalidate with the server so a freshly committed DB shows up.
+  const buf = await fetch('history.db', { cache: 'no-cache' }).then(r => {
     if (!r.ok) throw new Error('history.db not found');
     return r.arrayBuffer();
   });
@@ -326,13 +368,31 @@ function pairStats() {
   });
 }
 
+// Most reliable first; ties broken by more evidence (runs), then speed.
+function byReliability(a, b) {
+  return (b.uptime - a.uptime) || (b.runs.length - a.runs.length) ||
+         ((a.avgTime ?? Infinity) - (b.avgTime ?? Infinity));
+}
+
+// Run ids whose timestamp is within 24h of the latest run.
+function recentRunIds(hours = 24) {
+  if (!runs.length) return new Set();
+  const lastTs = new Date(runs[runs.length - 1].timestamp).getTime();
+  return new Set(runs.filter(r => lastTs - new Date(r.timestamp).getTime() <= hours * 3600 * 1000).map(r => r.id));
+}
+
 function providerStats() {
   const map = {};
+  const recent = recentRunIds(24);
   results.forEach(r => {
     const p = r.provider;
-    if (!map[p]) map[p] = { provider: p, runs: [], successes: 0, ttfts: [], times: [], models: new Set() };
+    if (!map[p]) map[p] = { provider: p, runs: [], successes: 0, ttfts: [], times: [], models: new Set(), recent: 0, recentOk: 0 };
     map[p].runs.push(r);
     map[p].models.add(r.model);
+    if (recent.has(r.run_id)) {
+      map[p].recent++;
+      if (r.success) map[p].recentOk++;
+    }
     if (r.success) {
       map[p].successes++;
       if (r.ttft != null) map[p].ttfts.push(r.ttft);
@@ -349,7 +409,7 @@ function providerStats() {
     uptime: s.runs.length ? (s.successes / s.runs.length) * 100 : 0,
     avgTtft: s.ttfts.length ? s.ttfts.reduce((a,b)=>a+b,0)/s.ttfts.length : null,
     avgLatency: s.times.length ? s.times.reduce((a,b)=>a+b,0)/s.times.length : null,
-    success24: s.runs.length ? (s.successes / s.runs.length) * 100 : 0, // simplified; all data treated as window
+    success24: s.recent ? (s.recentOk / s.recent) * 100 : null,
   }));
 }
 
@@ -400,10 +460,12 @@ function renderOverview(el) {
   const last = runs[runs.length - 1];
   const lastResults = results.filter(r => r.run_id === last.id);
   const success = lastResults.filter(r => r.success);
-  const best = success.reduce((a,b) => (!a || b.response_time < a.response_time) ? b : a, null);
-  const bestTtft = success.reduce((a,b) => (!a || (b.ttft!=null && b.ttft < a.ttft)) ? b : a, null);
-  const bestTp = success.reduce((a,b) => (!a || (b.throughput!=null && b.throughput > a.throughput)) ? b : a, null);
-  const bestRel = pairStats().sort((a,b) => b.uptime - a.uptime)[0];
+  // Filter nulls first: a null in the first row used to "win" every comparison.
+  const withTtft = success.filter(r => r.ttft != null);
+  const bestTtft = withTtft.length ? withTtft.reduce((a,b) => b.ttft < a.ttft ? b : a) : null;
+  const withTp = success.filter(r => r.throughput != null);
+  const bestTp = withTp.length ? withTp.reduce((a,b) => b.throughput > a.throughput ? b : a) : null;
+  const bestRel = pairStats().sort(byReliability)[0];
 
   const kpi = (label, value, extra='') =>
     `<div class="kpi"><div class="label">${label}</div><div class="value" style="color:var(--accent)">${value}</div>${extra ? `<div class="delta">${extra}</div>` : ''}</div>`;
@@ -440,9 +502,10 @@ function renderOverview(el) {
 
   // Reliability pills
   html += `<div class="card fade-in" style="animation-delay:.15s"><h3 style="margin-bottom:10px">Reliability (All Runs)</h3><div style="display:flex;flex-wrap:wrap;gap:8px">`;
-  const stats = pairStats().sort((a,b) => b.uptime - a.uptime).slice(0, 20);
+  const stats = pairStats().sort(byReliability).slice(0, 20);
   stats.forEach(s => {
-    const c = s.uptime >= 95 ? 'var(--success)' : s.uptime >= 70 ? 'var(--warning)' : 'var(--danger)';
+    // Needs a real hex colour: `var(--x)22` is not a valid CSS colour.
+    const c = healthColor(s.uptime, 95, 70);
     html += `<span class="chip" style="background:${c}22;color:${c}">${pairLabel(s.model, s.provider)} ${s.uptime.toFixed(0)}%</span>`;
   });
   html += `</div></div>`;
@@ -454,8 +517,8 @@ function renderOverview(el) {
   const data = runs.map(r => r.total_pairs ? (r.success_count / r.total_pairs) * 100 : 0);
   new Chart(document.getElementById('trendChart'), {
     type: 'line',
-    data: { labels, datasets: [{ label: 'Success %', data, borderColor: 'var(--accent)', backgroundColor: 'rgba(255,210,30,0.08)', fill: true, tension: 0.3, pointRadius: 2 }] },
-    options: { responsive: true, maintainAspectRatio: false, scales: { x: { display: false }, y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: 'var(--text-dim)' } } }, plugins: { legend: { display: false } } }
+    data: { labels, datasets: [{ label: 'Success %', data, borderColor: COLORS.accent, backgroundColor: 'rgba(255,210,30,0.08)', pointBackgroundColor: COLORS.accent, fill: true, tension: 0.3, pointRadius: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { x: { display: false }, y: { ...AXES.y, suggestedMin: 0, suggestedMax: 100 } }, plugins: { legend: { display: false } } }
   });
 }
 
@@ -490,7 +553,7 @@ function renderLeaderboard(el) {
         <td>${fmtMs(s.avgTime)}</td>
         <td>${fmtMs(s.avgTtft)}</td>
         <td>${fmtTp(s.avgTp)}</td>
-        <td>${sparklineCanvas(vals.slice(-15), s.uptime>=80 ? 'var(--success)' : s.uptime>=50 ? 'var(--warning)' : 'var(--danger)')}</td>
+        <td>${sparklineCanvas(vals.slice(-15), healthColor(s.uptime, 80, 50))}</td>
       </tr>`;
     }).join('');
   }
@@ -543,7 +606,7 @@ function renderExplorer(el) {
   let timeChart, ttftChart, errChart;
   function update(key) {
     const rows = results.filter(r => r.model + ':' + r.provider === key);
-    const labels = rows.map((_,i) => 'R' + (i+1));
+    const labels = rows.map(r => '#' + r.run_id);
     const times = rows.map(r => r.success ? r.response_time : null);
     const ttfts = rows.map(r => r.success && r.ttft != null ? r.ttft : null);
     const cats = {};
@@ -552,20 +615,20 @@ function renderExplorer(el) {
     if (timeChart) timeChart.destroy();
     timeChart = new Chart(document.getElementById('exTime'), {
       type: 'line',
-      data: { labels, datasets: [{ label: 'Response Time', data: times, borderColor: 'var(--accent)', tension: 0.3, pointRadius: 3 }] },
-      options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color:'rgba(255,255,255,0.04)' }, ticks: { color:'var(--text-dim)' } }, x: { ticks: { color:'var(--text-dim)' } } }, plugins: { legend: { display:false } } }
+      data: { labels, datasets: [{ label: 'Response Time (ms)', data: times, borderColor: COLORS.accent, pointBackgroundColor: COLORS.accent, tension: 0.3, pointRadius: 3, spanGaps: true }] },
+      options: { responsive: true, maintainAspectRatio: false, scales: AXES, plugins: { legend: { display:false }, title: { display: true, text: 'Response time (ms)', color: COLORS.text } } }
     });
     if (ttftChart) ttftChart.destroy();
     ttftChart = new Chart(document.getElementById('exTtft'), {
       type: 'line',
-      data: { labels, datasets: [{ label: 'TTFT', data: ttfts, borderColor: 'var(--blue)', tension: 0.3, pointRadius: 3 }] },
-      options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color:'rgba(255,255,255,0.04)' }, ticks: { color:'var(--text-dim)' } }, x: { ticks: { color:'var(--text-dim)' } } }, plugins: { legend: { display:false } } }
+      data: { labels, datasets: [{ label: 'TTFT (ms)', data: ttfts, borderColor: COLORS.blue, pointBackgroundColor: COLORS.blue, tension: 0.3, pointRadius: 3, spanGaps: true }] },
+      options: { responsive: true, maintainAspectRatio: false, scales: AXES, plugins: { legend: { display:false }, title: { display: true, text: 'Time to first token (ms)', color: COLORS.text } } }
     });
     if (errChart) errChart.destroy();
     errChart = new Chart(document.getElementById('exErr'), {
       type: 'doughnut',
-      data: { labels: Object.keys(cats), datasets: [{ data: Object.values(cats), backgroundColor: ['var(--success)','var(--danger)','var(--warning)','var(--blue)','#9CA3AF'] }] },
-      options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: { labels: { color:'var(--text)' } } } }
+      data: { labels: Object.keys(cats), datasets: [{ data: Object.values(cats), backgroundColor: Object.keys(cats).map(statusColor), borderColor: '#111827' }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: LEGEND } }
     });
 
     let tbl = `<table><thead><tr><th>Run</th><th>Success</th><th>Time</th><th>TTFT</th><th>Category</th></tr></thead><tbody>`;
@@ -629,13 +692,17 @@ function renderCompare(el) {
     const b = stats.find(s => s.key === bKey);
     if (!a || !b) return;
 
+    // Align by run id (the same benchmark round), not by array position: two
+    // pairs rarely have identical run histories.
+    const aByRun = new Map(a.runs.map(r => [r.run_id, r]));
+    const bByRun = new Map(b.runs.map(r => [r.run_id, r]));
     const wins = { a:0, b:0, tie:0 };
-    const minLen = Math.min(a.runs.length, b.runs.length);
-    for (let i=0;i<minLen;i++) {
-      if (!a.runs[i].success || !b.runs[i].success) continue;
-      const diff = a.runs[i].response_time - b.runs[i].response_time;
+    aByRun.forEach((ra, runId) => {
+      const rb = bByRun.get(runId);
+      if (!rb || !ra.success || !rb.success) return;
+      const diff = ra.response_time - rb.response_time;
       if (diff < 0) wins.a++; else if (diff > 0) wins.b++; else wins.tie++;
-    }
+    });
 
     const row = (label, av, bv, lowerIsBetter=true) => {
       let winner = '';
@@ -648,7 +715,7 @@ function renderCompare(el) {
     };
 
     let body = `<table style="max-width:640px;margin-bottom:16px"><thead><tr><th>Metric</th><th>A</th><th>B</th><th>Winner</th></tr></thead><tbody>`;
-    body += row('Uptime %', a.uptime.toFixed(1), b.uptime.toFixed(1), false);
+    body += row('Uptime %', a.uptime, b.uptime, false);  // numbers: strings compared lexically
     body += row('Avg Time', a.avgTime, b.avgTime);
     body += row('Avg TTFT', a.avgTtft, b.avgTtft);
     body += row('Throughput', a.avgTp, b.avgTp, false);
@@ -656,20 +723,20 @@ function renderCompare(el) {
     body += `</tbody></table>`;
     document.getElementById('cmpBody').innerHTML = body;
 
-    const labels = a.runs.map((_,i) => 'R'+(i+1));
-    const aData = a.runs.map(r => r.success ? r.response_time : null);
-    const bData = b.runs.map(r => r.success ? r.response_time : null);
+    const runIds = [...new Set([...aByRun.keys(), ...bByRun.keys()])].sort((x, y) => x - y);
+    const labels = runIds.map(id => '#' + id);
+    const series = byRun => runIds.map(id => { const r = byRun.get(id); return r && r.success ? r.response_time : null; });
     if (cmpChart) cmpChart.destroy();
     cmpChart = new Chart(document.getElementById('cmpChart'), {
       type: 'line',
       data: {
         labels,
         datasets: [
-          { label: aKey, data: aData, borderColor: 'var(--accent)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 3 },
-          { label: bKey, data: bData, borderColor: 'var(--blue)', backgroundColor: 'transparent', tension: 0.3, pointRadius: 3 }
+          { label: aKey, data: series(aByRun), borderColor: COLORS.accent, pointBackgroundColor: COLORS.accent, backgroundColor: 'transparent', tension: 0.3, pointRadius: 3, spanGaps: true },
+          { label: bKey, data: series(bByRun), borderColor: COLORS.blue, pointBackgroundColor: COLORS.blue, backgroundColor: 'transparent', tension: 0.3, pointRadius: 3, spanGaps: true }
         ]
       },
-      options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid: { color:'rgba(255,255,255,0.04)' }, ticks: { color:'var(--text-dim)' } }, x: { ticks: { color:'var(--text-dim)' } } }, plugins: { legend: { labels: { color:'var(--text)' } } } }
+      options: { responsive: true, maintainAspectRatio: false, scales: AXES, plugins: { legend: LEGEND } }
     });
   }
 
@@ -698,7 +765,7 @@ function renderProviders(el) {
   </div>`;
 
   html += `<div class="card fade-in" style="animation-delay:.05s"><h3 style="margin-bottom:10px">Provider Ranking</h3>
-    <table><thead><tr><th>Provider</th><th>Models</th><th>Uptime %</th><th>Avg TTFT</th><th>Avg Latency</th><th>Success %</th><th>Trend</th></tr></thead><tbody>`;
+    <table><thead><tr><th>Provider</th><th>Models</th><th>Uptime % (all runs)</th><th>Avg TTFT</th><th>Avg Latency</th><th>Success % (24h)</th><th>Trend</th></tr></thead><tbody>`;
   pStats.sort((a,b) => b.uptime - a.uptime);
   pStats.forEach(p => {
     const vals = results.filter(r=>r.provider===p.provider && r.success).map(r=>r.response_time).slice(-15);
@@ -706,10 +773,10 @@ function renderProviders(el) {
       <td>${providerChip(p.provider)}</td>
       <td>${p.models}</td>
       <td>${fmtPct(p.uptime)}</td>
-      <td>${fmtMs(p.avgTtft)}</td>
-      <td>${fmtMs(p.avgLatency)}</td>
-      <td>${fmtPct(p.uptime)}</td>
-      <td>${sparklineCanvas(vals, p.uptime>=80 ? 'var(--success)' : p.uptime>=50 ? 'var(--warning)' : 'var(--danger)')}</td>
+      <td>${fmtMs(p.avgTtft == null ? null : Math.round(p.avgTtft))}</td>
+      <td>${fmtMs(p.avgLatency == null ? null : Math.round(p.avgLatency))}</td>
+      <td>${fmtPct(p.success24)}</td>
+      <td>${sparklineCanvas(vals, healthColor(p.uptime, 80, 50))}</td>
     </tr>`;
   });
   html += `</tbody></table></div>`;
@@ -736,7 +803,7 @@ function renderProviders(el) {
         { label: 'Avg Latency', data: provLat, backgroundColor: 'rgba(255,210,30,0.7)' }
       ]
     },
-    options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'var(--text-dim)'} }, x: { ticks:{color:'var(--text-dim)'} } }, plugins: { legend: { labels:{color:'var(--text)'} } } }
+    options: { responsive: true, maintainAspectRatio: false, scales: AXES, plugins: { legend: LEGEND } }
   });
 
   // Success rate per provider across runs
@@ -747,12 +814,13 @@ function renderProviders(el) {
       return rr.length ? (rr.filter(r=>r.success).length / rr.length)*100 : null;
     });
     const colors = ['#F55036','#6366F1','#00D4AA','#FF6B35','#A855F7','#38BDF8','#EC4899','#84CC16','#FFD21E','#2563EB','#7C3AED'];
-    return { label: PROVIDER_META[p.provider]?.name || p.provider, data, borderColor: colors[idx % colors.length], backgroundColor: 'transparent', tension: 0.3, pointRadius: 2 };
+    const color = PROVIDER_META[p.provider]?.color || colors[idx % colors.length];
+    return { label: PROVIDER_META[p.provider]?.name || p.provider, data, borderColor: color, pointBackgroundColor: color, backgroundColor: 'transparent', tension: 0.3, pointRadius: 2, spanGaps: true };
   });
   new Chart(document.getElementById('provSucc'), {
     type: 'line',
     data: { labels: runIds.map(id=>'#'+id), datasets: succDatasets },
-    options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'var(--text-dim)'} }, x: { ticks:{color:'var(--text-dim)'} } }, plugins: { legend: { labels:{color:'var(--text)'} } } }
+    options: { responsive: true, maintainAspectRatio: false, scales: { x: AXES.x, y: { ...AXES.y, suggestedMin: 0, suggestedMax: 100 } }, plugins: { legend: LEGEND } }
   });
 }
 
@@ -843,15 +911,14 @@ function renderDiscovery(el) {
   // Charts
   new Chart(document.getElementById('discDonut'), {
     type: 'doughnut',
-    data: { labels: Object.keys(cats), datasets: [{ data: Object.values(cats), backgroundColor: ['var(--success)','var(--danger)','var(--warning)','var(--blue)','#9CA3AF','#A855F7','#EC4899'] }] },
-    options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: { labels: { color:'var(--text)' } } } }
+    data: { labels: Object.keys(cats), datasets: [{ data: Object.values(cats), backgroundColor: Object.keys(cats).map(statusColor), borderColor: '#111827' }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: LEGEND } }
   });
-  const pLabels = Object.keys(provs);
-  const pData = Object.values(provs);
+  const provEntries = Object.entries(provs).sort((a, b) => b[1] - a[1]);
   new Chart(document.getElementById('discBar'), {
     type: 'bar',
-    data: { labels: pLabels.map(p=>PROVIDER_META[p]?.name || p), datasets: [{ label: 'Pairs', data: pData, backgroundColor: 'rgba(255,210,30,0.7)' }] },
-    options: { responsive: true, maintainAspectRatio: false, scales: { y: { grid:{color:'rgba(255,255,255,0.04)'}, ticks:{color:'var(--text-dim)'} }, x: { ticks:{color:'var(--text-dim)'} } }, plugins: { legend: { display:false } } }
+    data: { labels: provEntries.map(([p]) => PROVIDER_META[p]?.name || p), datasets: [{ label: 'Pairs', data: provEntries.map(([, n]) => n), backgroundColor: 'rgba(255,210,30,0.7)' }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: AXES, plugins: { legend: { display:false } } }
   });
 
   // Search
