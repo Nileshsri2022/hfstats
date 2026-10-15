@@ -19,6 +19,6 @@ htmlcov/
 Thumbs.db
 .history/
 
-# Generated artifacts (keep in repo for GH Pages, but ignore during dev if desired)
-# history.db
-# scripts/*.json
+# Pipeline hand-off files: passed between CI jobs as artifacts, never committed.
+# (history.db IS committed -- it is the dashboard's data source.)
+scripts/*.json
