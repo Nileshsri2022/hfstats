@@ -20,7 +20,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python3 scripts/classify_models.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: classified
           path: scripts/classified.json
@@ -42,7 +42,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MODEL_GROUP: group1
         run: python3 scripts/benchmark_models.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: results-group1
           path: scripts/results.json
@@ -64,7 +64,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MODEL_GROUP: group2
         run: python3 scripts/benchmark_models.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: results-group2
           path: scripts/results.json
@@ -86,7 +86,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MODEL_GROUP: group3
         run: python3 scripts/benchmark_models.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: results-group3
           path: scripts/results.json
